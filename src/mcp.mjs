@@ -293,7 +293,7 @@ export function serve() {
                 result: {
                     protocolVersion: '2024-11-05',
                     capabilities: { tools: {} },
-                    serverInfo: { name: 'agent-wire', version: '0.4.0' },
+                    serverInfo: { name: 'agent-wire', version: '0.4.1' },
                     instructions: INSTRUCTIONS,
                 },
             });

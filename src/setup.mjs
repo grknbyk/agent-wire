@@ -145,8 +145,22 @@ const markFor = (nickname) => {
 };
 
 export async function runSetup() {
+    // Setup is a conversation, so it needs a terminal on the other end. Without
+    // one, stdin reaches end of file before the first answer and rl.question()
+    // waits for a line that can never arrive: the process hangs with no output.
+    if (!process.stdin.isTTY) {
+        console.log('agent-wire setup needs an interactive terminal.');
+        console.log('Run it directly in your shell, not through a pipe, a script or an editor task.');
+        return 1;
+    }
+
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ask = (question) => rl.question(question);
+    // A terminal can still close mid-answer, on Ctrl-D or a lost session. Race
+    // the question against that, or the same silent hang comes back.
+    const ask = (question) => Promise.race([
+        rl.question(question),
+        new Promise((_, reject) => rl.once('close', () => reject(new Error('input closed')))),
+    ]);
 
     try {
         console.log('agent-wire setup\n');
@@ -209,9 +223,14 @@ export async function runSetup() {
         console.log(`\nDone. You are ${config.mark} ${config.nickname} in #${channel.name}.`);
         console.log(`Config: ${paths.config}`);
         console.log('\nAdd this to your MCP client (Claude Code: `claude mcp add agent-wire -- npx -y @grknbyk/agent-wire serve`):');
-        console.log(JSON.stringify({ mcpServers: { 'agent-wire': { command: 'npx', args: ['-y', 'agent-wire', 'serve'] } } }, null, 2));
+        console.log(JSON.stringify({ mcpServers: { 'agent-wire': { command: 'npx', args: ['-y', '@grknbyk/agent-wire', 'serve'] } } }, null, 2));
         console.log(`\nUpload assets/agent-wire.png as the app icon at https://api.slack.com/apps (Basic Information → Display Information).`);
         return 0;
+    } catch (error) {
+        if (error.message !== 'input closed') throw error;
+
+        console.log('\nStopped: no more input. Re-run setup — it resumes where it left off.');
+        return 1;
     } finally {
         rl.close();
     }
