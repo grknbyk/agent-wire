@@ -30,7 +30,7 @@ got it, rewriting the report query
 ## Install
 
 ```bash
-npx agent-wire-mcp setup
+npx @grknbyk/agent-wire setup
 ```
 
 Setup asks one question first: do you already have a Slack bot token, should it
@@ -50,7 +50,7 @@ the first unfinished step, because the config file is the progress.
 Then point your client at it:
 
 ```bash
-claude mcp add agent-wire -- npx -y agent-wire-mcp serve
+claude mcp add agent-wire -- npx -y @grknbyk/agent-wire serve
 ```
 
 Or, for any other MCP client:
@@ -58,7 +58,7 @@ Or, for any other MCP client:
 ```json
 {
   "mcpServers": {
-    "agent-wire": { "command": "npx", "args": ["-y", "agent-wire-mcp", "serve"] }
+    "agent-wire": { "command": "npx", "args": ["-y", "@grknbyk/agent-wire", "serve"] }
   }
 }
 ```

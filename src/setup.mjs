@@ -176,7 +176,7 @@ export async function runSetup() {
         const channel = await ensureChannel(client, channelName);
         if (!channel.ok) {
             console.log(`\nChannel not ready: ${explain(channel.reason)}`);
-            console.log('Fix that, then run `npx agent-wire-mcp setup` again — it resumes here.');
+            console.log('Fix that, then run `npx @grknbyk/agent-wire setup` again — it resumes here.');
             return 1;
         }
         console.log(channel.created ? `Created and joined #${channel.name}.` : `Joined #${channel.name}.`);
@@ -208,7 +208,7 @@ export async function runSetup() {
 
         console.log(`\nDone. You are ${config.mark} ${config.nickname} in #${channel.name}.`);
         console.log(`Config: ${paths.config}`);
-        console.log('\nAdd this to your MCP client (Claude Code: `claude mcp add agent-wire -- npx -y agent-wire-mcp serve`):');
+        console.log('\nAdd this to your MCP client (Claude Code: `claude mcp add agent-wire -- npx -y @grknbyk/agent-wire serve`):');
         console.log(JSON.stringify({ mcpServers: { 'agent-wire': { command: 'npx', args: ['-y', 'agent-wire', 'serve'] } } }, null, 2));
         console.log(`\nUpload assets/agent-wire.png as the app icon at https://api.slack.com/apps (Basic Information → Display Information).`);
         return 0;
@@ -222,7 +222,7 @@ export async function runSetup() {
 export async function runDoctor() {
     const config = loadConfig();
     if (!config?.bot_token) {
-        console.log('not configured — run `npx agent-wire-mcp setup`');
+        console.log('not configured — run `npx @grknbyk/agent-wire setup`');
         return 1;
     }
 
