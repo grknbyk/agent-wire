@@ -316,7 +316,7 @@ a 0.4 agent cannot verify each other. Upgrade both ends together.
 ## Development
 
 ```bash
-npm test       # 53 tests, no network
+npm test       # 60 tests, no network
 npm run bench  # medians over a synthetic 20k-message log
 ```
 

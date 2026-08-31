@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { activeChannels, channelMode, findChannel, loadConfig, paths, pollableChannels } from './config.mjs';
 import { DEFAULT_COUNT, appendMessages, archive, findByTs, markRead, readCursor, selectMessages, writeCursor } from './inbox.mjs';
 import { FINGERPRINT_CHARS, listPeers, signMessage } from './identity.mjs';
-import { listMembers, pollChannel, postMessage, slackClient, uploadFile } from './slack.mjs';
+import { CHANNEL_CONCURRENCY, listMembers, mapLimit, pollChannel, postMessage, slackClient, uploadFile } from './slack.mjs';
 import { MAX_HOPS, TEXT_MAX, formatMessage, mintNonce, renderEnvelope } from './protocol.mjs';
 
 const POLL_EVERY_MS = 5000;
@@ -134,18 +134,26 @@ function claimsPoll() {
     return true;
 }
 
+// The channels are fetched together and written afterwards, in order. Awaiting
+// one channel before starting the next spent a round trip per channel on data
+// that has nothing to do with the previous answer. Writing afterwards also means
+// no two channels interleave a read-modify-write of the same log.
+//
+// A channel that throws is caught here rather than at the caller, so one broken
+// channel costs its own messages instead of everybody else's.
 export async function pollOnce(config) {
     const client = slackClient(config.bot_token);
+    const channels = pollableChannels(config);
+    const polled = await mapLimit(channels, CHANNEL_CONCURRENCY, (channel) =>
+        pollChannel(client, channel, { since: readCursor(channel.id), myNickname: config.nickname })
+            .catch((error) => ({ ok: false, reason: error.message, items: [] })));
+
     let added = 0;
-    for (const channel of pollableChannels(config)) {
-        const result = await pollChannel(client, channel, {
-            since: readCursor(channel.id),
-            myNickname: config.nickname,
-        });
+    for (const [index, result] of polled.entries()) {
         if (!result.ok) continue;
 
         added += appendMessages(result.items);
-        if (result.newest) writeCursor(channel.id, result.newest);
+        if (result.newest) writeCursor(channels[index].id, result.newest);
     }
     return added;
 }

@@ -24,6 +24,34 @@ const NAME_MAX_CHARS = 80;
 // message says why it was left there.
 const DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024;
 
+// How many requests of one kind may be in flight. Slack rate-limits per method,
+// so these are per loop rather than one global number: history is Tier 3, the
+// user lookup is Tier 4, and a download is not an API call at all but does hold
+// a whole file in memory while it lands.
+export const CHANNEL_CONCURRENCY = 4;
+const USER_CONCURRENCY = 8;
+const DOWNLOAD_CONCURRENCY = 3;
+
+// Node has no bounded Promise.all, and both ends of the choice are wrong here:
+// awaiting in a loop costs one round trip per item, and an unbounded Promise.all
+// throws two hundred requests at a rate limiter. The workers pull from one shared
+// cursor rather than taking a slice each, so a slow reply cannot leave the others
+// queued behind it.
+export async function mapLimit(items, limit, run) {
+    const results = new Array(items.length);
+    let next = 0;
+
+    const worker = async () => {
+        while (next < items.length) {
+            const index = next++;
+            results[index] = await run(items[index], index);
+        }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+    return results;
+}
+
 // conversations.* reject a JSON body and chat.postMessage needs one for metadata,
 // so the client speaks both and the caller picks per method. The token rides along
 // because downloading a file is a plain fetch, not an API call.
@@ -165,12 +193,8 @@ async function downloadAttachment(client, file) {
 }
 
 async function downloadAll(client, files) {
-    const saved = [];
-    for (const file of files ?? []) {
-        const result = await downloadAttachment(client, file);
-        if (result) saved.push(result);
-    }
-    return saved;
+    const saved = await mapLimit(files ?? [], DOWNLOAD_CONCURRENCY, (file) => downloadAttachment(client, file));
+    return saved.filter(Boolean);
 }
 
 async function downloadById(client, fileId) {
@@ -191,13 +215,15 @@ async function resolveUserNames(client, userIds) {
     const missing = [...new Set(userIds)].filter((userId) => !known[userId]);
     if (missing.length === 0) return userIds.map((userId) => known[userId]);
 
-    const found = { ...known };
-    for (const userId of missing) {
+    const resolved = await mapLimit(missing, USER_CONCURRENCY, async (userId) => {
         const result = await client.form('users.info', { user: userId });
-        found[userId] = result.ok
+        return result.ok
             ? (result.user.profile?.display_name || result.user.real_name || userId)
             : userId;
-    }
+    });
+
+    const found = { ...known };
+    missing.forEach((userId, index) => { found[userId] = resolved[index]; });
     writeJson(paths.users, found);
     return userIds.map((userId) => found[userId]);
 }
