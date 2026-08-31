@@ -212,7 +212,7 @@ async function call(name, args, session) {
     if (missing.length) return `missing or empty: ${missing.join(', ')}`;
 
     const config = loadConfig();
-    if (!config) return 'agent-wire is not configured yet — run `npx agent-wire setup`';
+    if (!config) return 'agent-wire is not configured yet — run `npx agent-wire-mcp setup`';
 
     if (name === 'my_id') {
         const channels = (config.channels ?? []).map((channel) => `#${channel.name}`).join(', ') || 'none';
