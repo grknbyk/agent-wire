@@ -7,16 +7,28 @@
 // append-only log never has to be rewritten in place.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 
-import { HOME, paths, readJson, writeJson } from './config.mjs';
+import { HOME, derivedFromFile, paths, readJsonCached, writeJson } from './config.mjs';
+
+// Enough to catch up on a conversation, short enough not to bury the session that
+// asked. A caller that wants the whole log passes its own count.
+const DEFAULT_COUNT = 20;
 
 const storageKey = (item) => `${item.channel}:${item.ts}`;
 
+// Parsed at most once per write. Four call sites read the whole log — select,
+// append, archive, findByTs — and a poll runs several of them back to back, so
+// without this a 20k-message log is parsed four times to answer one question.
 export function readInbox() {
     if (!existsSync(paths.inbox)) return [];
-    return readFileSync(paths.inbox, 'utf8').split('\n').filter(Boolean)
+    return derivedFromFile(paths.inbox, 'parsed', () => readFileSync(paths.inbox, 'utf8')
+        .split('\n').filter(Boolean)
         .map((line) => { try { return JSON.parse(line); } catch { return null; } })
-        .filter(Boolean);
+        .filter(Boolean));
 }
+
+// The dedup check is a lookup, so it is stored as one. Rebuilding a 20k-entry Set
+// per appended message is the whole cost of appending a message.
+const inboxKeys = () => derivedFromFile(paths.inbox, 'keys', () => new Set(readInbox().map(storageKey)));
 
 export const stateOf = (states, item) => states[storageKey(item)] ?? 'unread';
 
@@ -26,7 +38,7 @@ export const stateOf = (states, item) => states[storageKey(item)] ?? 'unread';
 export function appendMessages(items) {
     if (items.length === 0) return 0;
 
-    const seen = new Set(readInbox().map(storageKey));
+    const seen = inboxKeys();
     const fresh = items.filter((item) => !seen.has(storageKey(item)));
     if (fresh.length === 0) return 0;
 
@@ -38,25 +50,36 @@ export function appendMessages(items) {
 // `channel` names one channel explicitly and overrides everything. `channels`
 // is the caller's allow-list, which is how switched-off channels stay out of the
 // default view without being deleted from the log.
-export function selectMessages({ state = 'unread', count = 20, channel = null, channels = null } = {}) {
-    const states = readJson(paths.states, {});
-    const visible = readInbox().filter((item) => {
+export function selectMessages({ state = 'unread', count = DEFAULT_COUNT, channel = null, channels = null } = {}) {
+    const states = readJsonCached(paths.states, {});
+    const isVisible = (item) => {
         if (channel) return item.channel === channel;
         if (channels) return channels.includes(item.channel);
         return true;
-    });
-    const wanted = state === 'all' ? visible : visible.filter((item) => stateOf(states, item) === state);
-    return wanted.slice(-count);
+    };
+
+    // Scanned from the newest end and stopped at `count`. Filtering the whole log
+    // to keep the last twenty of it was most of what reading an inbox cost, and
+    // the log only grows.
+    const log = readInbox();
+    const picked = [];
+    for (let index = log.length - 1; index >= 0 && picked.length < count; index--) {
+        const item = log[index];
+        if (!isVisible(item)) continue;
+        if (state !== 'all' && stateOf(states, item) !== state) continue;
+        picked.push(item);
+    }
+    return picked.reverse();
 }
 
 export function markRead(items) {
-    const states = readJson(paths.states, {});
+    const states = readJsonCached(paths.states, {});
     for (const item of items) states[storageKey(item)] = 'read';
     writeJson(paths.states, states);
 }
 
 export function archive(ts) {
-    const states = readJson(paths.states, {});
+    const states = readJsonCached(paths.states, {});
     const targets = ts
         ? readInbox().filter((item) => item.ts === ts)
         : readInbox().filter((item) => stateOf(states, item) === 'read');
@@ -67,10 +90,10 @@ export function archive(ts) {
 
 export const findByTs = (ts) => readInbox().find((item) => item.ts === ts) ?? null;
 
-export const readCursor = (channelId) => readJson(paths.cursors, {})[channelId] ?? null;
+export const readCursor = (channelId) => readJsonCached(paths.cursors, {})[channelId] ?? null;
 
 export function writeCursor(channelId, ts) {
-    const cursors = readJson(paths.cursors, {});
+    const cursors = readJsonCached(paths.cursors, {});
     cursors[channelId] = ts;
     writeJson(paths.cursors, cursors);
 }

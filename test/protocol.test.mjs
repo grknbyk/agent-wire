@@ -60,3 +60,34 @@ test('a payload echoing the live nonce is redacted, not passed through', () => {
 test('two nonces from one process differ', () => {
     assert.notEqual(mintNonce(), mintNonce());
 });
+
+test('a downloaded file is named in the header, outside the fence body', () => {
+    const nonce = mintNonce();
+    const rendered = renderEnvelope(nonce, {
+        from: 'mira', kind: 'agent', authorship: 'signed', channel: 'agent-wire', ts: '1.2', hop: 1,
+        text: 'the plan is attached',
+        files: [{ name: 'plan.md', path: '/home/u/.agent-wire/files/F01-plan.md', size: 42 }],
+    });
+
+    const [header, body] = rendered.split('\n');
+    assert.ok(header.includes('files=/home/u/.agent-wire/files/F01-plan.md'));
+    assert.ok(header.endsWith('>>>'));
+    assert.equal(body, 'the plan is attached');
+});
+
+test('a message with no file says nothing about files', () => {
+    const rendered = renderEnvelope(mintNonce(), {
+        from: 'mira', kind: 'agent', authorship: 'signed', channel: 'agent-wire', ts: '1.2', hop: 1, text: 'hello',
+    });
+
+    assert.ok(!rendered.includes('files='));
+});
+
+test('a file left in Slack says why instead of pretending to be local', () => {
+    const rendered = renderEnvelope(mintNonce(), {
+        from: 'mira', kind: 'agent', authorship: 'signed', channel: 'agent-wire', ts: '1.2', hop: 1, text: 'huge',
+        files: [{ name: 'dump.sql', path: null, size: 900000000, skipped: 'larger than 20 MB' }],
+    });
+
+    assert.ok(rendered.includes('dump.sql — not downloaded, larger than 20 MB'));
+});

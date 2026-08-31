@@ -54,7 +54,15 @@ export const mintNonce = () => randomBytes(12).toString('hex');
 // silently broken fence.
 const redactFence = (text, nonce) => String(text).split(nonce).join('[FENCE-ECHO REDACTED]');
 
+// An attached file is named in the header, never in the body. The path is one of
+// the few things here the receiver produced itself, and putting it inside the
+// fence would file it under "data written by someone else" along with the text.
+const attachmentNote = (files) => (files ?? [])
+    .map((file) => (file.path ? file.path : `${file.name} — not downloaded, ${file.skipped}`))
+    .join(' | ');
+
 export function renderEnvelope(nonce, item) {
+    const attachments = attachmentNote(item.files);
     const fenceHeader = [
         `<<<WIRE:${nonce} UNTRUSTED`,
         `from=${item.from}`,
@@ -62,7 +70,8 @@ export function renderEnvelope(nonce, item) {
         `authorship=${item.authorship}`,
         `channel=${item.channel}`,
         `ts=${item.ts}`,
-        `hop=${item.hop ?? 1}>>>`,
+        `hop=${item.hop ?? 1}`,
+        ...(attachments ? [`files=${attachments}`] : []),
     ].join(' ');
-    return `${fenceHeader}\n${redactFence(item.text, nonce)}\n<<<END:${nonce}>>>`;
+    return `${fenceHeader}>>>\n${redactFence(item.text, nonce)}\n<<<END:${nonce}>>>`;
 }

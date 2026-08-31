@@ -60,3 +60,16 @@ test('a signature cannot be replayed into another channel', () => {
 test('a malformed key is a failed check, not a crash', () => {
     assert.equal(checkAuthorship({ from: 'x', publicKey: 'not-base64-der', signature: 'nope', ...fields }).verdict, 'unsigned');
 });
+
+test('a signature over one file does not verify for another', () => {
+    const mira = generateKeypair();
+    checkAuthorship(signedBy(mira, 'mira', { file: 'F0PLAN' }));
+
+    const swapped = { ...signedBy(mira, 'mira', { file: 'F0PLAN' }), file: 'F0MALWARE' };
+    assert.equal(checkAuthorship(swapped).verdict, 'unsigned');
+});
+
+test('a message with no file still verifies', () => {
+    const nox = generateKeypair();
+    assert.equal(checkAuthorship(signedBy(nox, 'nox')).verdict, 'new');
+});

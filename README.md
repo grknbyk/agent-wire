@@ -33,17 +33,17 @@ got it, rewriting the report query
 npx @grknbyk/agent-wire setup
 ```
 
-Setup asks one question first: do you already have a Slack bot token, should it
-create the app for you, or do you want to paste the manifest by hand?
+Setup prints the path of the bundled `manifest.json`. You create the app from it
+at [api.slack.com/apps/new](https://api.slack.com/apps/new), install it, and paste
+the Bot User OAuth Token back. Then you create the channel in Slack and type
+`/invite @agent-wire` in it.
 
-If you let it create the app, it needs one App Configuration Token from
-[api.slack.com/apps](https://api.slack.com/apps), at the bottom of that page.
-After that it creates the app from the bundled manifest, opens your browser once
-for approval, catches the redirect itself, creates the channel, and joins it.
+The app never adds itself to anything. It has no scope to create a channel or to
+join one, so a person decides where it can read and write.
 
 Setup never asks "did you do it? (y/n)". Every step it can verify, it verifies by
 asking Slack. When a step is stuck for a reason Slack reports, such as a missing
-scope, a private channel it cannot join, or a token from the wrong workspace, it
+scope, a channel nobody invited it to, or a token from the wrong workspace, it
 says which one and what to do about it. Quit halfway and re-run: it resumes at
 the first unfinished step, because the config file is the progress.
 
@@ -77,11 +77,27 @@ Or, for any other MCP client:
 
 ## Tools your agent gets
 
-`send`, `send_file`, `inbox`, `archive`, `peers`, `channels`, `my_id`.
+`send`, `send_file`, `inbox`, `archive`, `peers`, `members`, `channels`, `my_id`.
 
 Text over 3500 characters is posted as a Markdown file instead of a message.
 Slack splits anything longer, and the tail arrives without a header, so half an
 answer vanishes while the sender is told it was delivered.
+
+## Files go both ways
+
+`send_file` uploads, and the receiving side downloads. A `.md` plan sent from one
+machine lands on the other as a real file in `~/.agent-wire/files/`, and `inbox`
+prints that path in the fence header, so the agent opens it with its own tools.
+Files a human drags into the channel arrive the same way.
+
+Slack accepts no metadata on a file upload, so the file and the message that
+describes it are two posts. The message is the signed one, and the file id it
+names is inside what the signature covers, so a valid signature cannot be lifted
+onto somebody else's upload. A message that fails verification is never
+downloaded.
+
+Anything over 20 MB stays in Slack. The message still arrives and says why the
+file was left there.
 
 ## One channel per project
 
@@ -205,20 +221,29 @@ Your workspace admin will ask. The manifest requests:
 | Scope | Why |
 |---|---|
 | `chat:write` | Post messages |
-| `channels:history`, `groups:history` | Read the channels it was added to |
-| `channels:read`, `groups:read` | Find a channel by name, check membership |
-| `channels:join` | Join a public channel so you skip the invite step |
-| `channels:manage` | Create the channel during setup |
-| `files:read`, `files:write` | Send and receive long messages as files |
+| `channels:history` | Read the channels it was added to |
+| `channels:read` | Find a channel by name, list who is in it |
+| `files:write` | Send a file, and post a long message as one |
+| `files:read` | Download a file somebody sent |
 | `users:read` | Show a human's name instead of `U08J21KLER1` |
 
-The app only ever reads channels it has been added to.
+Six, and that is the whole list. No `channels:join` or `channels:manage`, so the
+app cannot add itself to a channel or create one. No `groups:*`, so private
+channels are out of reach: use a public one.
+
+The two lookups it does are both scoped to the invite. Channels come from
+`users.conversations`, which answers "which channels am I in", never
+`conversations.list`, which answers "which channels exist here". Names come from
+`conversations.members` on one of those channels. There is no call in the package
+that can enumerate the workspace.
 
 ## Where things are stored
 
 Everything lives in `~/.agent-wire/` (override with `AGENT_WIRE_HOME`).
 `config.json` holds the token, identity and channels. `inbox.jsonl` is the
-append-only message log. `peers.json` holds the pinned keys.
+append-only message log. `peers.json` holds the pinned keys. `files/` holds every
+attachment that arrived, named by Slack file id so two `plan.md` files stay two
+files.
 
 The local log is the source of truth. Slack is a cache that can be re-read at any
 time, so recovering a lost inbox is an ordinary operation rather than a
@@ -232,11 +257,19 @@ reinstalled app cannot produce duplicates.
 - Discord as a second transport
 - Published measurements of fenced against unfenced injection compliance
 
+Wire format v2 signs the attached file id alongside the text, so a 0.5 agent and
+a 0.4 agent cannot verify each other. Upgrade both ends together.
+
 ## Development
 
 ```bash
-npm test
+npm test       # 42 tests, no network
+npm run bench  # medians over a synthetic 20k-message log
 ```
+
+The benchmark is here because the slow paths are the ones nobody watches: a log
+that only grows, and a CLI that a prompt hook runs on every prompt. It is not
+shipped to npm.
 
 ## License
 

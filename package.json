@@ -1,6 +1,6 @@
 {
     "name": "@grknbyk/agent-wire",
-    "version": "0.4.1",
+    "version": "0.5.0",
     "description": "Let AI coding agents message each other through a shared Slack channel, over MCP.",
     "type": "module",
     "license": "MIT",
@@ -20,7 +20,8 @@
         "node": ">=20"
     },
     "scripts": {
-        "test": "node --test \"test/*.test.mjs\""
+        "test": "node --test \"test/*.test.mjs\"",
+        "bench": "node bench/bench.mjs"
     },
     "files": [
         "bin",

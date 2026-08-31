@@ -1,9 +1,11 @@
 #!/usr/bin/env node
+// Only the two cheap modules are imported up front. `status` builds an
+// Intl.Segmenter and touches the Extended_Pictographic table, which together cost
+// more than everything else this file does; `setup` pulls in readline. A prompt
+// hook runs `drain` on every single prompt, so it must not pay for the panel it
+// never draws.
 import { activeChannels, loadConfig, setChannelActive } from '../src/config.mjs';
-import { pollOnce, serve } from '../src/mcp.mjs';
-import { runDoctor, runSetup } from '../src/setup.mjs';
 import { markRead, selectMessages } from '../src/inbox.mjs';
-import { runStatus } from '../src/status.mjs';
 
 const USAGE = `agent-wire — message other AI coding agents through Slack
 
@@ -18,18 +20,23 @@ const USAGE = `agent-wire — message other AI coding agents through Slack
 
 Docs: https://github.com/grknbyk/agent-wire`;
 
+// A prompt hook has one line of the user's screen to work with, so a backlog past
+// this is reported as a count rather than listed.
+const DRAIN_COUNT = 50;
+
 // For a client hook that runs on every prompt: says a message is waiting without
 // spending the agent's turn on reading it, and marks nothing as read.
 async function drain() {
     const config = loadConfig();
     if (!config) return 0;
 
+    const { pollOnce } = await import('../src/mcp.mjs');
     await pollOnce(config).catch(() => {
         // Offline is not an error here; the next drain catches up.
     });
     const waiting = selectMessages({
         state: 'unread',
-        count: 50,
+        count: DRAIN_COUNT,
         channels: activeChannels(config).map((channel) => channel.name),
     });
     if (waiting.length === 0) return 0;
@@ -73,16 +80,18 @@ function switchChannel(name, active) {
     return 0;
 }
 
+const showStatus = async () => (await import('../src/status.mjs')).runStatus();
+
 const commands = {
-    status: () => runStatus() ?? notConfigured(),
-    setup: runSetup,
-    doctor: runDoctor,
+    status: async () => await showStatus() ?? notConfigured(),
+    setup: async () => (await import('../src/setup.mjs')).runSetup(),
+    doctor: async () => (await import('../src/setup.mjs')).runDoctor(),
     drain,
     channels: listChannels,
     on: () => switchChannel(process.argv[3], true),
     off: () => switchChannel(process.argv[3], false),
     read: async () => {
-        const items = selectMessages({ state: 'unread', count: 50 });
+        const items = selectMessages({ state: 'unread', count: DRAIN_COUNT });
         for (const item of items) console.log(`[${item.authorship}] ${item.at} ${item.from}: ${item.text}`);
         markRead(items);
         return 0;
@@ -96,20 +105,23 @@ function notConfigured() {
 
 const name = process.argv[2];
 
-// serve() is the one command that must not exit: the open stdin stream is what
-// keeps the MCP server alive, and awaiting a never-resolving promise here would
-// make Node print a warning into the very stream the client is parsing.
+// The exit code is set, never forced. Calling process.exit() while an undici
+// socket from a Slack call is still closing aborts libuv on Windows, and doctor
+// hit that on every run. Nothing here holds the event loop open, so letting Node
+// finish by itself costs about a millisecond.
+//
+// serve() is the one command that must not exit at all: the open stdin stream is
+// what keeps the MCP server alive.
 if (name === 'serve') {
-    serve();
+    (await import('../src/mcp.mjs')).serve();
 } else if (commands[name]) {
-    process.exit(await commands[name]() ?? 0);
+    process.exitCode = await commands[name]() ?? 0;
 } else if (!name) {
     // Bare invocation shows where you stand once there is something to stand on,
     // and the usage text while there is not.
-    const shown = runStatus();
+    const shown = await showStatus();
     if (shown === null) console.log(USAGE);
-    process.exit(0);
 } else {
     console.log(USAGE);
-    process.exit(1);
+    process.exitCode = 1;
 }
