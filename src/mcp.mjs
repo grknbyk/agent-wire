@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { activeChannels, findChannel, loadConfig, paths } from './config.mjs';
-import { appendMessages, archive, findByTs, markRead, readCursor, selectMessages, writeCursor } from './inbox.mjs';
+import { activeChannels, channelMode, findChannel, loadConfig, paths, pollableChannels } from './config.mjs';
+import { DEFAULT_COUNT, appendMessages, archive, findByTs, markRead, readCursor, selectMessages, writeCursor } from './inbox.mjs';
 import { FINGERPRINT_CHARS, listPeers, signMessage } from './identity.mjs';
 import { listMembers, pollChannel, postMessage, slackClient, uploadFile } from './slack.mjs';
 import { MAX_HOPS, TEXT_MAX, formatMessage, mintNonce, renderEnvelope } from './protocol.mjs';
@@ -61,7 +61,7 @@ const TOOLS = [
     },
     {
         name: 'channels',
-        description: 'List the channels this agent was invited to and whether each one is switched on. Switching them is a command the user runs, not something this tool can do.',
+        description: 'List the channels and what each is set to in THIS session: off (silent), ask (counts only) or read (messages arrive in every prompt). Changing a mode is a command the user runs, not something this tool can do.',
         inputSchema: { type: 'object', properties: {} },
     },
     {
@@ -78,7 +78,7 @@ const TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                count: { type: 'integer', description: 'how many to show (default 20)' },
+                count: { type: 'integer', description: `how many to show (default ${DEFAULT_COUNT})` },
                 state: { type: 'string', enum: ['unread', 'read', 'archived', 'all'] },
                 channel: { type: 'string', description: 'limit to one channel by name' },
             },
@@ -137,7 +137,7 @@ function claimsPoll() {
 export async function pollOnce(config) {
     const client = slackClient(config.bot_token);
     let added = 0;
-    for (const channel of activeChannels(config)) {
+    for (const channel of pollableChannels(config)) {
         const result = await pollChannel(client, channel, {
             since: readCursor(channel.id),
             myNickname: config.nickname,
@@ -288,7 +288,7 @@ async function call(name, args, session) {
         const configured = config.channels ?? [];
         if (configured.length === 0) return 'no channels configured';
         return configured
-            .map((channel) => `${channel.active === false ? 'off' : 'on '}  #${channel.name}`)
+            .map((channel) => `${channelMode(config, channel).padEnd(4)}  #${channel.name}`)
             .join('\n');
     }
 
@@ -308,7 +308,7 @@ async function call(name, args, session) {
         // view sees only the channels the user left on.
         const items = selectMessages({
             state: args.state ?? 'unread',
-            count: args.count ?? 20,
+            count: args.count ?? DEFAULT_COUNT,
             channel: args.channel ?? null,
             channels: args.channel ? null : activeChannels(config).map((channel) => channel.name),
         });

@@ -3,8 +3,13 @@
 // `doctor`'s question, and duplicating it here would make one of the two slow.
 import { existsSync, statSync } from 'node:fs';
 
-import { loadConfig, paths, readJson } from './config.mjs';
+import { channelMode, loadConfig, paths, readJson } from './config.mjs';
 import { readInbox, stateOf } from './inbox.mjs';
+
+// Filled, half, hollow: how much of the channel reaches this session, readable
+// down the column without reading the word next to it. All three are one column
+// wide, so the counts to their right stay in line.
+const MODE_MARK = { read: '● read', ask: '◐ ask ', off: '○ off ' };
 
 const INNER_WIDTH = 42;
 const LABEL_WIDTH = 6;
@@ -129,11 +134,11 @@ export function renderStatus(config) {
     if (channels.length === 0) lines.push(row('none configured'));
 
     for (const channel of channels) {
-        const isOn = channel.active !== false;
+        const mode = channelMode(config, channel);
         const waiting = counts[channel.name] ?? 0;
         lines.push(row(
-            `${pad(fit(channel.name, 12), 13)}${isOn ? '● on ' : '○ off'}`
-            + `${String(waiting).padStart(6)} ${isOn ? 'unread' : 'held'}`,
+            `${pad(fit(channel.name, 12), 13)}${MODE_MARK[mode]}`
+            + `${String(waiting).padStart(5)} ${mode === 'off' ? 'held' : 'unread'}`,
         ));
     }
 

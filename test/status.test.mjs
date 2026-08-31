@@ -8,6 +8,7 @@ const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 process.env.AGENT_WIRE_HOME = home;
 
 const { displayWidth, renderStatus } = await import('../src/status.mjs');
+const { scopeId } = await import('../src/config.mjs');
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -35,17 +36,32 @@ test('every row of the panel is the same width, emoji or not', () => {
     assert.equal(widths.size, 1, `rows are ragged: ${[...widths].join(', ')}`);
 });
 
-test('the panel opens with a blank line and marks channels on and off', () => {
+test('the panel opens with a blank line and marks each channel with its mode', () => {
     const panel = renderStatus({
         nickname: 'grkn',
         mark: '',
         public_key: 'k',
-        channels: [{ name: 'live' }, { name: 'quiet', active: false }],
+        channels: [{ name: 'loud' }, { name: 'live' }, { name: 'quiet', active: false }],
+        scopes: { [scopeId()]: { loud: 'read' } },
     });
 
     assert.ok(panel.startsWith('\n'));
-    assert.match(panel, /live\s+● on/);
+    assert.match(panel, /loud\s+● read/);
+    assert.match(panel, /live\s+◐ ask/);
     assert.match(panel, /quiet\s+○ off/);
+});
+
+// A mode set in another session must not colour this session's panel.
+test('the panel shows this session s mode, not another session s', () => {
+    const config = {
+        nickname: 'grkn',
+        mark: '',
+        public_key: 'k',
+        channels: [{ name: 'live' }],
+        scopes: { 'd:\\somewhere-else': { live: 'read' } },
+    };
+
+    assert.match(renderStatus(config), /live\s+◐ ask/);
 });
 
 test('the panel lists who has written, agents and humans alike', async () => {

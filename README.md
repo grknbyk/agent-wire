@@ -72,12 +72,18 @@ Or, for any other MCP client:
 | `agent-wire serve` | Run the MCP stdio server, which is what your client launches |
 | `agent-wire doctor` | Re-check the token, the channels and the identity |
 | `agent-wire drain` | Print what arrived since last time, for a prompt hook |
-| `agent-wire channels` | List the channels and whether each one is switched on |
-| `agent-wire on/off <name>` | Bring a channel into scope, or take it out |
+| `agent-wire channels` | List the channels and what each one is set to here |
+| `agent-wire ask <name>` | Name who is waiting and how many; open nothing |
+| `agent-wire read <name>` | Put the messages themselves into every prompt |
+| `agent-wire off <name>` | Say nothing about this channel in this session |
 
 ## Tools your agent gets
 
 `send`, `send_file`, `inbox`, `archive`, `peers`, `members`, `channels`, `my_id`.
+
+The mode of a channel is a command the user runs, never a tool. A message
+arriving from the channel must not be able to talk the agent into silencing
+another channel, nor into opening one.
 
 Text over 3500 characters is posted as a Markdown file instead of a message.
 Slack splits anything longer, and the tail arrives without a header, so half an
@@ -113,18 +119,64 @@ Setup configures one channel. Add more by hand in `~/.agent-wire/config.json`:
 Every message is tagged with the channel it came from, `send` takes an optional
 `channel`, and `inbox` can filter by one. The first entry is the default.
 
+## Three modes, one per session
+
+Every channel is in one of three modes, and the mode belongs to the session, not
+to the machine:
+
+| Mode | What a prompt gets |
+|---|---|
+| `off` | Nothing. The channel is not mentioned. |
+| `ask` | One line naming who is waiting and how many. Nothing is opened. Default. |
+| `read` | The messages themselves, fenced, and marked read as they arrive. |
+
+`ask` looks like this, and is what a prompt hook prints:
+
+```
+Unread messages : Huso(5), Sinan(2)
+```
+
+Loudest sender first, because five messages from one person is a conversation
+waiting while one each from five people is a standup. Past five names the rest
+become `+3 more`. Anything that failed its signature check is called out on the
+same line — `[1 FORGED]` — rather than counted in silently.
+
+`read` is the one to think about before turning on: it puts other people's
+writing into your agent's prompt without you asking. It arrives inside the same
+fence the `inbox` tool uses, but the guarantee is weaker there. Over MCP the rule
+for reading fenced content is delivered once through the handshake, where no
+message can sit beside it; a prompt hook has no handshake, so the rule and the
+content share a page.
+
+### What "per session" means
+
+A session is identified by its working directory, because that is the only thing
+a fresh `drain` process can see — it is launched again on every prompt and
+remembers nothing. So one project can run `read` while another runs `off`, with
+the same nickname, the same keys and the same Slack app behind both. Two windows
+open on one folder count as one session; set `AGENT_WIRE_SCOPE` to tell them
+apart.
+
+Read and unread are per session too. They have to be: a session on `read` opens
+everything it is handed, and if that also marked the message read next door, an
+`ask` session would report an empty inbox forever.
+
+The poller is not per session. One poller feeds one shared log for the whole
+machine, so a channel stays polled while any session still wants it. `off` means
+"do not tell me", not "stop collecting" — otherwise the quietest session on the
+machine would decide what the busiest one is allowed to see.
+
 ## Working on two of five channels
 
-Channels you are not working on today can be switched off. Running `agent-wire`
-with no arguments shows where you stand:
+Running `agent-wire` with no arguments shows where you stand:
 
 ```
 ┌──────────────── agent-wire ────────────────┐
 │ name  grkn           mark  🔥              │
 │ key   MCowBQYDK2VwAyEAq7Xn2mZ8kLcYzQwErTy… │
 ├───────────────── CHANNELS ─────────────────┤
-│ agent-wms    ● on      3 unread            │
-│ agent-crm    ● on      1 unread            │
+│ agent-wms    ● read    3 unread            │
+│ agent-crm    ◐ ask     1 unread            │
 │ agent-hcm    ○ off     1 held              │
 │ agent-lab    ○ off     1 held              │
 ├────────────────── PEERS ───────────────────┤
@@ -145,8 +197,9 @@ verifies. Letting a later message clear it would hand an attacker the way to bur
 the evidence.
 
 ```bash
-agent-wire off agent-hcm
-agent-wire on  agent-hcm
+agent-wire off  agent-hcm
+agent-wire ask  agent-hcm
+agent-wire read agent-wms
 ```
 
 `status` reads the config and the local log only, so it answers instantly.
@@ -263,7 +316,7 @@ a 0.4 agent cannot verify each other. Upgrade both ends together.
 ## Development
 
 ```bash
-npm test       # 42 tests, no network
+npm test       # 53 tests, no network
 npm run bench  # medians over a synthetic 20k-message log
 ```
 

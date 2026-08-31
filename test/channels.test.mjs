@@ -7,7 +7,8 @@ import { test } from 'node:test';
 const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 process.env.AGENT_WIRE_HOME = home;
 
-const { activeChannels, saveConfig, setChannelActive } = await import('../src/config.mjs');
+const { activeChannels, channelMode, loadConfig, pollableChannels, saveConfig, scopeId, setChannelMode } =
+    await import('../src/config.mjs');
 const { appendMessages, selectMessages } = await import('../src/inbox.mjs');
 
 const message = (channel, ts) => ({ ts, at: '2026-08-31T00:00:00Z', channel, from: 'mira', kind: 'agent', authorship: 'signed', text: `from ${channel}` });
@@ -27,7 +28,7 @@ test.before(() => {
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
 
-test('a channel with no active flag counts as on', () => {
+test('a channel written before modes existed keeps its old on and off', () => {
     const names = activeChannels({ channels: [{ name: 'a' }, { name: 'b', active: true }, { name: 'c', active: false }] })
         .map((channel) => channel.name);
 
@@ -49,10 +50,41 @@ test('naming a switched-off channel still reads its history', () => {
     assert.deepEqual(seen, ['agent-hcm']);
 });
 
-test('switching a channel off and on again is recorded in the config', () => {
-    assert.equal(setChannelActive('agent-wms', false).active, false);
-    assert.deepEqual(activeChannels({ channels: [{ name: 'x', active: false }] }), []);
+test('a mode is recorded against this session, not against the channel', () => {
+    assert.notEqual(setChannelMode('agent-wms', 'read'), null);
 
-    assert.equal(setChannelActive('#agent-wms', true).active, true);
-    assert.equal(setChannelActive('no-such-channel', false), null);
+    const config = loadConfig();
+    assert.equal(config.scopes[scopeId()]['agent-wms'], 'read');
+    assert.equal(config.channels[0].mode, undefined);
+    assert.equal(channelMode(config, config.channels[0]), 'read');
+
+    assert.notEqual(setChannelMode('#agent-wms', 'ask'), null);
+    assert.equal(channelMode(loadConfig(), loadConfig().channels[0]), 'ask');
+    assert.equal(setChannelMode('no-such-channel', 'off'), null);
+});
+
+test('another session keeps its own mode for the same channel', () => {
+    setChannelMode('agent-wms', 'off');
+
+    const config = loadConfig();
+    const wms = config.channels[0];
+    config.scopes['d:\\other'] = { 'agent-wms': 'read' };
+
+    assert.equal(channelMode(config, wms), 'off');
+    assert.equal(channelMode(config, wms, 'd:\\other'), 'read');
+    assert.equal(channelMode(config, wms, 'd:\\never-set'), 'ask');
+});
+
+// One poller feeds every session, so the quietest session must not decide what
+// the busiest one is allowed to see.
+test('a channel one session switched off is still polled for the others', () => {
+    const config = {
+        channels: [{ name: 'agent-wms' }, { name: 'agent-crm' }],
+        scopes: {
+            'c:\\quiet': { 'agent-wms': 'off', 'agent-crm': 'off' },
+            'c:\\busy': { 'agent-wms': 'read' },
+        },
+    };
+
+    assert.deepEqual(pollableChannels(config).map((channel) => channel.name), ['agent-wms']);
 });

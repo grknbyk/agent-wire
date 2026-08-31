@@ -7,13 +7,21 @@
 // append-only log never has to be rewritten in place.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 
-import { HOME, derivedFromFile, paths, readJsonCached, writeJson } from './config.mjs';
+import { HOME, derivedFromFile, paths, readJsonCached, scopeId, writeJson } from './config.mjs';
 
 // Enough to catch up on a conversation, short enough not to bury the session that
 // asked. A caller that wants the whole log passes its own count.
-const DEFAULT_COUNT = 20;
+export const DEFAULT_COUNT = 20;
 
-const storageKey = (item) => `${item.channel}:${item.ts}`;
+// Two keys, because the log and the reading of it have different owners. The log
+// is shared: one poller writes one copy of each message, and this is what stops it
+// writing a second.
+const logKey = (item) => `${item.channel}:${item.ts}`;
+
+// Read and unread are per session, because the modes are. One session set to
+// `read` opens everything it is given; if that also marked the message read for
+// the session next door, an `ask` session would report an empty inbox forever.
+const storageKey = (item) => `${scopeId()}|${logKey(item)}`;
 
 // Parsed at most once per write. Four call sites read the whole log — select,
 // append, archive, findByTs — and a poll runs several of them back to back, so
@@ -28,7 +36,7 @@ export function readInbox() {
 
 // The dedup check is a lookup, so it is stored as one. Rebuilding a 20k-entry Set
 // per appended message is the whole cost of appending a message.
-const inboxKeys = () => derivedFromFile(paths.inbox, 'keys', () => new Set(readInbox().map(storageKey)));
+const inboxKeys = () => derivedFromFile(paths.inbox, 'keys', () => new Set(readInbox().map(logKey)));
 
 export const stateOf = (states, item) => states[storageKey(item)] ?? 'unread';
 
@@ -39,7 +47,7 @@ export function appendMessages(items) {
     if (items.length === 0) return 0;
 
     const seen = inboxKeys();
-    const fresh = items.filter((item) => !seen.has(storageKey(item)));
+    const fresh = items.filter((item) => !seen.has(logKey(item)));
     if (fresh.length === 0) return 0;
 
     mkdirSync(HOME, { recursive: true });

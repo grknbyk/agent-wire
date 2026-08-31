@@ -67,10 +67,23 @@ export function derivedFromFile(file, key, build) {
 // Write to a sibling then rename: a config half-written by a killed setup run is
 // how an install becomes unrecoverable, and rename is atomic on every platform we
 // target. The temp name carries the pid so two runs cannot share it.
+// Indented for the files a person opens when something looks wrong, packed for
+// the ones only this program reads. states.json holds one entry per message ever
+// received, so the indent is 800 KB of whitespace nobody will look at. The
+// decision is made here, by file, rather than at each call site, so a new caller
+// cannot get it wrong by leaving an argument out.
+//
+// ponytail: marking a page read rewrites the whole state map — 5.7ms at 20k
+// messages, most of it serialising keys that did not change. That is invisible
+// next to a model round-trip and it grows with history, not with traffic. If it
+// ever matters, the upgrade is an append-only states.jsonl with compaction, the
+// same shape inbox.jsonl already has.
+const READ_BY_HUMANS = new Set([paths.config, paths.peers]);
+
 export function writeJson(file, value) {
     mkdirSync(HOME, { recursive: true });
     const tempFile = `${file}.${process.pid}.tmp`;
-    writeFileSync(tempFile, JSON.stringify(value, null, 2));
+    writeFileSync(tempFile, JSON.stringify(value, null, READ_BY_HUMANS.has(file) ? 2 : 0));
     renameSync(tempFile, file);
     parsedByFile.set(file, { stamp: stampOf(file), value });
 }
@@ -89,22 +102,77 @@ export function patchConfig(patch) {
 
 export const defaultChannel = (config) => config.channels?.[0] ?? null;
 
-// A channel is active unless it was explicitly switched off, so a config written
-// before this option existed keeps every channel on.
-export const activeChannels = (config) => (config.channels ?? []).filter((channel) => channel.active !== false);
+// What a channel is allowed to do to a prompt, from least to most:
+//   off   nothing about it reaches this session
+//   ask   the session is told who is waiting and how many, and reads nothing
+//   read  the messages themselves land in the prompt and are marked read
+//
+// ask is the default because it is the one that cannot surprise anybody: a count
+// is a fact about the channel, while the text is somebody else's writing.
+export const MODES = ['off', 'ask', 'read'];
+
+// The mode is per session; the identity, the keys and the channel list are not.
+// A session has no id a separate process could read — `drain` is launched fresh on
+// every prompt — so the working directory stands in for one, which is what the
+// agent client gives both processes. Two windows open on the same folder are one
+// session by this measure; AGENT_WIRE_SCOPE is how you tell them apart.
+// Resolved once. It ends up inside the key of every message state, so a
+// process.cwd() syscall per key is a syscall per message, and marking fifty
+// messages read would pay for fifty of them. Nothing here calls process.chdir().
+let resolvedScope = null;
+
+export const scopeId = () => {
+    resolvedScope ??= (process.env.AGENT_WIRE_SCOPE || process.cwd()).toLowerCase();
+    return resolvedScope;
+};
+
+// The mode this session has chosen, or the channel's own default when it has
+// chosen nothing. A channel written before modes existed carries `active`: off
+// stays off, and anything else was already announcing counts without reading.
+export function channelMode(config, channel, scope = scopeId()) {
+    const chosen = config?.scopes?.[scope]?.[channel.name];
+    if (MODES.includes(chosen)) return chosen;
+    if (MODES.includes(channel.mode)) return channel.mode;
+    return channel.active === false ? 'off' : 'ask';
+}
+
+// What this session hears about.
+export const activeChannels = (config) => (config.channels ?? [])
+    .filter((channel) => channelMode(config, channel) !== 'off');
+
+// What the machine polls. One poller feeds one shared log for every session, so a
+// channel stays polled while any session still wants it — `off` here means "do not
+// tell me", not "stop collecting". Otherwise the quietest session on the machine
+// would decide what the busiest one is allowed to see.
+export function pollableChannels(config) {
+    const scopes = Object.values(config.scopes ?? {});
+
+    const isWantedBySomeone = (channel) => {
+        const chosen = scopes.map((modes) => modes[channel.name]).filter((mode) => MODES.includes(mode));
+        if (chosen.length === 0) return channelMode(config, channel) !== 'off';
+        return chosen.some((mode) => mode !== 'off');
+    };
+
+    return (config.channels ?? []).filter(isWantedBySomeone);
+}
 
 // Switching a channel off leaves its cursor where it is, so switching it back on
 // replays everything that arrived meanwhile instead of losing it.
-export function setChannelActive(name, active) {
+// Returns what the channel was as well as what it is now, so the caller can say
+// "this replays what you missed" only when something was actually missed.
+export function setChannelMode(name, mode) {
     const config = loadConfig();
     if (!config) return null;
 
     const channel = findChannel(config, name);
     if (!channel) return null;
 
-    channel.active = active;
+    const previous = channelMode(config, channel);
+    const scopes = config.scopes ?? {};
+    scopes[scopeId()] = { ...scopes[scopeId()], [channel.name]: mode };
+    config.scopes = scopes;
     saveConfig(config);
-    return channel;
+    return { channel, previous };
 }
 
 export function findChannel(config, wanted) {

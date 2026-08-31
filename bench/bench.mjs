@@ -23,7 +23,8 @@ const REPEATS = 7;
 const home = mkdtempSync(join(tmpdir(), 'agent-wire-bench-'));
 process.env.AGENT_WIRE_HOME = home;
 
-const { paths, writeJson } = await import('../src/config.mjs');
+const { paths, scopeId, writeJson } = await import('../src/config.mjs');
+const drain = await import('../src/drain.mjs');
 const inbox = await import('../src/inbox.mjs');
 const identity = await import('../src/identity.mjs');
 const protocol = await import('../src/protocol.mjs');
@@ -81,7 +82,7 @@ function writeSyntheticLog() {
             files: [],
         }));
         // Most of a real log is already read; the unread tail is what a session asks for.
-        if (index < LOG_SIZE - 200) states[`${channel}:${ts}`] = 'read';
+        if (index < LOG_SIZE - 200) states[`${scopeId()}|${channel}:${ts}`] = 'read';
     }
     writeFileSync(paths.inbox, lines.join('\n') + '\n');
     writeJson(paths.states, states);
@@ -126,6 +127,12 @@ async function measure() {
     const client = stubClient();
     const channel = { id: 'C1', name: 'agent-wire' };
 
+    // What a prompt hook builds on every prompt, at a backlog nobody should ever
+    // have: the whole drain page from one busy channel.
+    const drainChannels = [{ id: 'C1', name: 'agent-wire' }];
+    const drainConfig = (mode) => ({ channels: drainChannels, scopes: { [scopeId()]: { 'agent-wire': mode } } });
+    const drainWaiting = inbox.selectMessages({ state: 'all', count: 50 });
+
     const results = {
         read_inbox_ms: timeIt(() => inbox.readInbox()),
         select_unread_ms: timeIt(() => inbox.selectMessages({ state: 'unread', count: 20 })),
@@ -140,6 +147,9 @@ async function measure() {
         render_envelope_ms: timeIt(() => {
             for (let attempt = 0; attempt < VERIFY_MESSAGES; attempt++) protocol.renderEnvelope(nonce, envelopeItem);
         }),
+        mark_read_ms: timeIt(() => inbox.markRead(inbox.selectMessages({ state: 'all', count: 200 }))),
+        drain_ask_ms: timeIt(() => drain.drainReport(drainConfig('ask'), drainChannels, drainWaiting, 'nonce')),
+        drain_read_ms: timeIt(() => drain.drainReport(drainConfig('read'), drainChannels, drainWaiting, 'nonce')),
         list_members_ms: await timeAsync(() => slack.listMembers(client, 'C1')),
         poll_channel_ms: await timeAsync(() => slack.pollChannel(client, channel, { since: null, myNickname: 'grkn' })),
         cold_help_ms: coldStart('help'),
@@ -166,7 +176,8 @@ function coldStart(command) {
 
 const WORK_METRICS = [
     'read_inbox_ms', 'select_unread_ms', 'select_by_channel_ms', 'append_dedup_ms', 'find_by_ts_ms',
-    'verify_authorship_ms', 'render_envelope_ms', 'list_members_ms', 'poll_channel_ms',
+    'verify_authorship_ms', 'render_envelope_ms', 'mark_read_ms', 'drain_ask_ms', 'drain_read_ms',
+    'list_members_ms', 'poll_channel_ms',
 ];
 
 // One number for the learning-rate loop to descend on. Cold start and memory are

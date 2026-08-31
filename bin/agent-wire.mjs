@@ -4,8 +4,10 @@
 // more than everything else this file does; `setup` pulls in readline. A prompt
 // hook runs `drain` on every single prompt, so it must not pay for the panel it
 // never draws.
-import { activeChannels, loadConfig, setChannelActive } from '../src/config.mjs';
+import { activeChannels, channelMode, loadConfig, scopeId, setChannelMode } from '../src/config.mjs';
 import { markRead, selectMessages } from '../src/inbox.mjs';
+import { drainReport } from '../src/drain.mjs';
+import { mintNonce } from '../src/protocol.mjs';
 
 const USAGE = `agent-wire — message other AI coding agents through Slack
 
@@ -13,10 +15,15 @@ const USAGE = `agent-wire — message other AI coding agents through Slack
   agent-wire setup       connect a workspace, a channel and this agent's identity
   agent-wire serve       run the MCP stdio server (what your agent client launches)
   agent-wire doctor      re-check the token, the channels and this agent's identity
-  agent-wire drain       print messages that arrived since the last drain, then stop
-  agent-wire channels    list the channels and whether each one is switched on
-  agent-wire on <name>   switch a channel on
-  agent-wire off <name>  switch a channel off: not polled, not announced
+  agent-wire drain       report what arrived since the last drain, then stop
+  agent-wire channels    list the channels and what each one is set to here
+  agent-wire ask <name>  name who is waiting and how many; open nothing (default)
+  agent-wire read <name> put the messages themselves into every prompt
+  agent-wire off <name>  say nothing about it in this session
+
+The three modes are per session, identified by the working directory. The token,
+the nickname and the keys are shared. Set AGENT_WIRE_SCOPE to tell two sessions
+in one folder apart.
 
 Docs: https://github.com/grknbyk/agent-wire`;
 
@@ -24,8 +31,9 @@ Docs: https://github.com/grknbyk/agent-wire`;
 // this is reported as a count rather than listed.
 const DRAIN_COUNT = 50;
 
-// For a client hook that runs on every prompt: says a message is waiting without
-// spending the agent's turn on reading it, and marks nothing as read.
+// For a client hook that runs on every prompt. An `ask` channel costs the agent
+// one line and reads nothing; a `read` channel spends the prompt on the messages
+// themselves and marks them read, because nothing else is going to.
 async function drain() {
     const config = loadConfig();
     if (!config) return 0;
@@ -34,16 +42,20 @@ async function drain() {
     await pollOnce(config).catch(() => {
         // Offline is not an error here; the next drain catches up.
     });
+
+    const heard = activeChannels(config);
     const waiting = selectMessages({
         state: 'unread',
         count: DRAIN_COUNT,
-        channels: activeChannels(config).map((channel) => channel.name),
+        channels: heard.map((channel) => channel.name),
     });
     if (waiting.length === 0) return 0;
 
-    const senders = [...new Set(waiting.map((item) => item.from))].join(', ');
-    console.log(`agent-wire: ${waiting.length} unread message(s) from ${senders}.`
-        + ' Tell the user in one line. Do not read them unless asked — use the agent-wire inbox tool.');
+    const { lines, readItems } = drainReport(config, heard, waiting, mintNonce());
+    if (lines.length === 0) return 0;
+
+    console.log(lines.join('\n'));
+    markRead(readItems);
     return 0;
 }
 
@@ -55,28 +67,39 @@ function listChannels() {
         return 1;
     }
 
-    for (const channel of configured) console.log(`${channel.active === false ? 'off' : 'on '}  #${channel.name}`);
+    for (const channel of configured) console.log(`${channelMode(config, channel).padEnd(4)}  #${channel.name}`);
+    console.log(`\nmodes are per session; this one is ${scopeId()}`);
     return 0;
 }
 
-// Switching a channel is a decision for the person running the agent, so it lives
-// on the command line and not in the MCP tool list. A message arriving from the
-// channel must not be able to talk the agent into silencing another one.
-function switchChannel(name, active) {
+const MODE_EXPLAINED = {
+    off: (name) => `#${name} is off for this session. Nothing about it reaches this agent;`
+        + ` its history stays readable with inbox channel="${name}".`,
+    ask: (name) => `#${name} is on ask. Every prompt names who is waiting and how many, and opens nothing.`,
+    read: (name) => `#${name} is on read. Every prompt carries the messages themselves, marked read as they arrive.`
+        + ' Other people\'s writing now reaches this agent without you asking for it.',
+};
+
+// Which mode a channel is in is a decision for the person running the agent, so
+// it lives on the command line and not in the MCP tool list. A message arriving
+// from the channel must not be able to talk the agent into silencing another one,
+// nor into opening one.
+function switchChannel(name, mode) {
     if (!name) {
-        console.log(`usage: agent-wire ${active ? 'on' : 'off'} <channel>`);
+        console.log(`usage: agent-wire ${mode} <channel>`);
         return 1;
     }
 
-    const channel = setChannelActive(name, active);
-    if (!channel) {
+    const changed = setChannelMode(name, mode);
+    if (!changed) {
         console.log(`no configured channel named "${name}"`);
         return 1;
     }
 
-    console.log(active
-        ? `#${channel.name} is on. The next poll replays everything since it was switched off.`
-        : `#${channel.name} is off. It is no longer polled or announced; its history stays readable with inbox channel="${channel.name}".`);
+    console.log(MODE_EXPLAINED[mode](changed.channel.name));
+    if (changed.previous === 'off' && mode !== 'off') {
+        console.log('The next poll replays everything that arrived while it was off.');
+    }
     return 0;
 }
 
@@ -88,14 +111,12 @@ const commands = {
     doctor: async () => (await import('../src/setup.mjs')).runDoctor(),
     drain,
     channels: listChannels,
-    on: () => switchChannel(process.argv[3], true),
-    off: () => switchChannel(process.argv[3], false),
-    read: async () => {
-        const items = selectMessages({ state: 'unread', count: DRAIN_COUNT });
-        for (const item of items) console.log(`[${item.authorship}] ${item.at} ${item.from}: ${item.text}`);
-        markRead(items);
-        return 0;
-    },
+    off: () => switchChannel(process.argv[3], 'off'),
+    ask: () => switchChannel(process.argv[3], 'ask'),
+    read: () => switchChannel(process.argv[3], 'read'),
+    // `on` was the only way to undo `off` before there were three modes, and it
+    // meant "announce it without opening it". That is ask.
+    on: () => switchChannel(process.argv[3], 'ask'),
 };
 
 function notConfigured() {
