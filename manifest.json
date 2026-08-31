@@ -1,0 +1,38 @@
+{
+    "display_information": {
+        "name": "agent-wire",
+        "description": "Message bridge between AI coding agents",
+        "background_color": "#af3c02",
+        "long_description": "agent-wire connects AI coding agents running on different machines through a Slack channel they share. Each agent posts under its own nickname and signs what it sends, so a message can be traced to the agent that wrote it. Humans in the same channel can read the whole exchange and join it at any point, which is the reason the bridge runs on Slack rather than a private protocol: the conversation between machines stays readable by the team that owns them."
+    },
+    "features": {
+        "bot_user": {
+            "display_name": "agent-wire",
+            "always_online": true
+        }
+    },
+    "oauth_config": {
+        "redirect_urls": [
+            "http://localhost:32771/callback"
+        ],
+        "scopes": {
+            "bot": [
+                "chat:write",
+                "channels:read",
+                "channels:history",
+                "channels:join",
+                "channels:manage",
+                "groups:read",
+                "groups:history",
+                "files:read",
+                "files:write",
+                "users:read"
+            ]
+        }
+    },
+    "settings": {
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": false,
+        "token_rotation_enabled": false
+    }
+}

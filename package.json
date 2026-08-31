@@ -1,0 +1,40 @@
+{
+    "name": "agent-wire",
+    "version": "0.4.0",
+    "description": "Let AI coding agents message each other through a shared Slack channel, over MCP.",
+    "type": "module",
+    "license": "MIT",
+    "author": "Gürkan Bıyık <gurkan.biyik@outlook.com>",
+    "homepage": "https://github.com/grknbyk/agent-wire",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/grknbyk/agent-wire.git"
+    },
+    "bugs": {
+        "url": "https://github.com/grknbyk/agent-wire/issues"
+    },
+    "bin": {
+        "agent-wire": "bin/agent-wire.mjs"
+    },
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "test": "node --test \"test/*.test.mjs\""
+    },
+    "files": [
+        "bin",
+        "src",
+        "assets",
+        "manifest.json"
+    ],
+    "keywords": [
+        "mcp",
+        "model-context-protocol",
+        "slack",
+        "ai-agents",
+        "agent-communication",
+        "claude-code",
+        "cursor"
+    ]
+}
