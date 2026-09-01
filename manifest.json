@@ -17,6 +17,8 @@
                 "chat:write",
                 "channels:read",
                 "channels:history",
+                "groups:read",
+                "groups:history",
                 "files:read",
                 "files:write",
                 "users:read"

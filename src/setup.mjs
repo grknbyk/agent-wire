@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { loadConfig, patchConfig, paths } from './config.mjs';
-import { probeChannel, probeToken, slackClient } from './slack.mjs';
+import { joinedChannels, probeToken, slackClient } from './slack.mjs';
 import { FINGERPRINT_CHARS, generateKeypair } from './identity.mjs';
 import { formatMessage } from './protocol.mjs';
 
@@ -25,10 +25,30 @@ const EXPLANATIONS = {
     token_revoked: 'that token has been revoked; reinstall the app to get a fresh one',
     missing_scope: 'the app is installed but lacks a scope it needs — reinstall it after updating the manifest',
     not_in_channel: 'the bot is not in that channel yet — type "/invite @agent-wire" in it',
-    needs_invite: 'the bot is in no channel by that name — create it in Slack if it does not exist, then type "/invite @agent-wire" in it',
+    needs_invite: 'the bot has not been invited anywhere yet — open a channel in Slack, public or private, and type "/invite @agent-wire" in it',
 };
 
 const explain = (reason) => EXPLANATIONS[reason] ?? `Slack said: ${reason}`;
+
+// The invite is the whole decision, so setup and doctor read the channels the bot
+// is in rather than asking a human to type a name correctly. Slack owns the id and
+// the name here: a channel renamed after setup would otherwise sit in the config
+// under a name that finds nothing, which is what the first install ran into.
+// ponytail: a rename drops that channel back to the default mode, because the
+// per-session modes are keyed by name. Key them by id when someone minds.
+async function adoptChannels(client, config) {
+    const joined = await joinedChannels(client);
+    if (!joined.ok) return joined;
+    if (joined.channels.length === 0) return { ok: false, reason: 'needs_invite' };
+
+    const knownById = new Map((config?.channels ?? []).map((channel) => [channel.id, channel]));
+    const channels = joined.channels.map((channel) => ({ ...knownById.get(channel.id), ...channel }));
+
+    patchConfig({ channels });
+    return { ok: true, channels, added: channels.filter((channel) => !knownById.has(channel.id)) };
+}
+
+const channelList = (channels) => channels.map((channel) => `#${channel.name}`).join(', ');
 
 // One path, by hand. Slack's own OAuth redirect needs a localhost listener, and a
 // listener is the part that breaks: a busy port, a firewall prompt, a headless
@@ -94,15 +114,13 @@ export async function runSetup() {
             installed_at: new Date().toISOString(),
         });
 
-        const answer = await ask('\nChannel for this project [agent-wire]: ');
-        const channelName = (answer.trim() || 'agent-wire').replace(/^#/, '');
-        const channel = await probeChannel(client, channelName);
-        if (!channel.ok) {
-            console.log(`\nChannel not ready: ${explain(channel.reason)}`);
-            console.log('Fix that, then run `npx @grknbyk/agent-wire setup` again — it resumes here.');
+        const adopted = await adoptChannels(client, existing);
+        if (!adopted.ok) {
+            console.log(`\nNo channel yet: ${explain(adopted.reason)}`);
+            console.log('Invite it, then run `npx @grknbyk/agent-wire setup` again — it resumes here.');
             return 1;
         }
-        console.log(`Found #${channel.name}, the bot is in it.`);
+        console.log(`In ${channelList(adopted.channels)}.`);
 
         const suggested = defaultNickname();
         const nicknameAnswer = await ask(`\nThis agent's name [${suggested}]: `);
@@ -118,7 +136,6 @@ export async function runSetup() {
             mark: markAnswer.trim() || markFor(nickname),
             private_key: keypair.privateKey,
             public_key: keypair.publicKey,
-            channels: [{ id: channel.id, name: channel.name }],
         });
 
         const hello = formatMessage({
@@ -127,9 +144,11 @@ export async function runSetup() {
             to: 'all',
             text: `joined from ${process.platform}. Key ${config.public_key.slice(0, FINGERPRINT_CHARS)}…`,
         });
-        await client.json('chat.postMessage', { channel: channel.id, text: hello });
+        for (const channel of adopted.channels) {
+            await client.json('chat.postMessage', { channel: channel.id, text: hello });
+        }
 
-        console.log(`\nDone. You are ${config.mark} ${config.nickname} in #${channel.name}.`);
+        console.log(`\nDone. You are ${config.mark} ${config.nickname} in ${channelList(adopted.channels)}.`);
         console.log(`Config: ${paths.config}`);
         console.log('\nAdd this to your MCP client (Claude Code: `claude mcp add agent-wire -- npx -y @grknbyk/agent-wire serve`):');
         console.log(JSON.stringify({ mcpServers: { 'agent-wire': { command: 'npx', args: ['-y', '@grknbyk/agent-wire', 'serve'] } } }, null, 2));
@@ -159,13 +178,23 @@ export async function runDoctor() {
     console.log(token.ok ? `token      ok (${token.team})` : `token      FAILED — ${explain(token.reason)}`);
     if (!token.ok) return 1;
 
+    // A token written, an identity not yet: setup was quit between the two steps,
+    // which it invites you to do. Doctor crashed here instead of saying so.
+    if (!config.public_key) {
+        console.log('identity   MISSING — setup stopped before naming this agent; run it again');
+        return 1;
+    }
     console.log(`identity   ${config.mark} ${config.nickname}, key ${config.public_key.slice(0, FINGERPRINT_CHARS)}…`);
 
-    let failures = 0;
-    for (const channel of config.channels ?? []) {
-        const probe = await probeChannel(client, channel.name);
-        console.log(probe.ok ? `channel    #${channel.name} ok` : `channel    #${channel.name} FAILED — ${explain(probe.reason)}`);
-        if (!probe.ok) failures++;
+    const adopted = await adoptChannels(client, config);
+    if (!adopted.ok) {
+        console.log(`channel    FAILED — ${explain(adopted.reason)}`);
+        return 1;
     }
-    return failures === 0 ? 0 : 1;
+
+    const isNew = new Set(adopted.added.map((channel) => channel.id));
+    for (const channel of adopted.channels) {
+        console.log(`channel    #${channel.name} ok${isNew.has(channel.id) ? ' (new, added to config)' : ''}`);
+    }
+    return 0;
 }

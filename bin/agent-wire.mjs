@@ -85,12 +85,18 @@ const MODE_EXPLAINED = {
 // from the channel must not be able to talk the agent into silencing another one,
 // nor into opening one.
 function switchChannel(name, mode) {
-    if (!name) {
-        console.log(`usage: agent-wire ${mode} <channel>`);
+    // One channel is the ordinary case, and typing its name adds nothing to the
+    // command. Past one there is a real choice, so the names are listed instead.
+    const configured = loadConfig()?.channels ?? [];
+    const wanted = name ?? (configured.length === 1 ? configured[0].name : null);
+    if (!wanted) {
+        console.log(configured.length === 0
+            ? 'no channels configured — run `agent-wire setup`'
+            : `usage: agent-wire ${mode} <channel> — one of ${configured.map((channel) => channel.name).join(', ')}`);
         return 1;
     }
 
-    const changed = setChannelMode(name, mode);
+    const changed = setChannelMode(wanted, mode);
     if (!changed) {
         console.log(`no configured channel named "${name}"`);
         return 1;

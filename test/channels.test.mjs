@@ -88,3 +88,26 @@ test('a channel one session switched off is still polled for the others', () => 
 
     assert.deepEqual(pollableChannels(config).map((channel) => channel.name), ['agent-wms']);
 });
+
+// A team that keeps its agent channel private was told the bot was in no channel
+// by that name, while chat:write posted into it happily. The types filter asked
+// for public channels only, so the invite it already had was invisible.
+test('a private channel the bot was invited to is discovered like any other', async () => {
+    const asked = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, options) => {
+        asked.push(new URLSearchParams(options.body).get('types'));
+        return {
+            status: 200,
+            ok: true,
+            json: async () => ({ ok: true, channels: [{ id: 'C0BQ', name: 'wms-agents', is_private: true }] }),
+        };
+    };
+
+    const { joinedChannels, slackClient } = await import('../src/slack.mjs');
+    const found = await joinedChannels(slackClient('xoxb-test'));
+    globalThis.fetch = realFetch;
+
+    assert.deepEqual(found, { ok: true, channels: [{ id: 'C0BQ', name: 'wms-agents' }] });
+    assert.deepEqual(asked, ['public_channel,private_channel']);
+});

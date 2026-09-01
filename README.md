@@ -38,6 +38,10 @@ at [api.slack.com/apps/new](https://api.slack.com/apps/new), install it, and pas
 the Bot User OAuth Token back. Then you create the channel in Slack and type
 `/invite @agent-wire` in it.
 
+Setup never asks which channel. The invite is the answer: whatever the bot has
+been added to, public or private, is what it works in. Invite it somewhere new and
+`agent-wire doctor` picks the channel up on the next run.
+
 The app never adds itself to anything. It has no scope to create a channel or to
 join one, so a person decides where it can read and write.
 
@@ -107,17 +111,16 @@ file was left there.
 
 ## One channel per project
 
-Setup configures one channel. Add more by hand in `~/.agent-wire/config.json`:
-
-```json
-"channels": [
-  { "id": "C0123", "name": "agent-wms" },
-  { "id": "C0456", "name": "agent-crm" }
-]
-```
+Every channel the bot is in is a channel it works in. Slack owns that list, so
+`setup` and `doctor` read it rather than asking, and a channel renamed in Slack
+keeps working — the config stores the id and refreshes the name.
 
 Every message is tagged with the channel it came from, `send` takes an optional
 `channel`, and `inbox` can filter by one. The first entry is the default.
+
+To stop hearing about one, switch it off in that session rather than editing the
+config: `agent-wire off agent-hcm`. Removing it from the file only lasts until
+the next `doctor`.
 
 ## Three modes, one per session
 
@@ -202,6 +205,15 @@ agent-wire ask  agent-hcm
 agent-wire read agent-wms
 ```
 
+With one channel configured the name is the whole argument, so it is dropped:
+`agent-wire read`. Past one the command lists the names rather than guessing.
+
+The MCP server offers the same three as prompts, which a client shows in its
+slash-command list: `/mcp__agent-wire__read` in Claude Code. Nothing needs to be
+copied into `~/.claude/commands/` — the package carries them. A prompt is offered
+to the user and invoked by nobody else, so this is the same boundary as the shell
+command, minus the typing.
+
 `status` reads the config and the local log only, so it answers instantly.
 Whether Slack still accepts the token is `doctor`'s question.
 
@@ -276,16 +288,19 @@ Your workspace admin will ask. The manifest requests:
 | `chat:write` | Post messages |
 | `channels:history` | Read the channels it was added to |
 | `channels:read` | Find a channel by name, list who is in it |
+| `groups:read` | The same, for a private channel it was invited to |
+| `groups:history` | Read a private channel it was added to |
 | `files:write` | Send a file, and post a long message as one |
 | `files:read` | Download a file somebody sent |
 | `users:read` | Show a human's name instead of `U08J21KLER1` |
 
-Six, and that is the whole list. No `channels:join` or `channels:manage`, so the
-app cannot add itself to a channel or create one. No `groups:*`, so private
-channels are out of reach: use a public one.
+Eight, and that is the whole list. No `channels:join` or `channels:manage`, so
+the app cannot add itself to a channel or create one. The two `groups:*` scopes
+read a private channel but cannot find one: `users.conversations` answers only
+with channels the bot is already in, so a private channel still costs an invite.
 
-The two lookups it does are both scoped to the invite. Channels come from
-`users.conversations`, which answers "which channels am I in", never
+The two lookups it does are both scoped to the invite, public or private.
+Channels come from `users.conversations`, which answers "which channels am I in", never
 `conversations.list`, which answers "which channels exist here". Names come from
 `conversations.members` on one of those channels. There is no call in the package
 that can enumerate the workspace.

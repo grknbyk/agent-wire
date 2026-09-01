@@ -96,27 +96,31 @@ export async function probeToken(client) {
 // users.conversations, not conversations.list: the first answers "which channels
 // am I in", the second answers "which channels exist in this workspace". A bridge
 // has no business asking the second one, so it never does. The invite is the whole
-// access control, and it is a human who types it.
-export async function probeChannel(client, name) {
-    const wanted = String(name).replace(/^#/, '').toLowerCase();
+// access control, and it is a human who types it. Private channels are asked
+// for by name too. A team that kept its agent channel private was told the bot
+// was in no channel by that name, while chat:write posted into it happily.
+export async function joinedChannels(client) {
+    const joined = [];
     let cursor = '';
+
     for (let page = 0; page < MAX_PAGES; page++) {
         const result = await client.form('users.conversations', {
-            types: 'public_channel',
+            types: 'public_channel,private_channel',
             exclude_archived: true,
             limit: MEMBER_LIMIT,
             cursor,
         });
         if (!result.ok) return { ok: false, reason: result.error };
 
-        const found = result.channels.find((channel) => channel.name.toLowerCase() === wanted);
-        if (found) return { ok: true, id: found.id, name: found.name };
+        for (const channel of result.channels) joined.push({ id: channel.id, name: channel.name });
 
         cursor = result.response_metadata?.next_cursor ?? '';
-        if (!cursor) return { ok: false, reason: 'needs_invite' };
+        if (!cursor) break;
     }
-    return { ok: false, reason: 'needs_invite' };
+
+    return { ok: true, channels: joined };
 }
+
 
 // Everyone in one channel the bot was invited to. No workspace directory call
 // exists anywhere in the package, so an invite is the only way a name reaches it.
