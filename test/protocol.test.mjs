@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { formatMessage, fromSlackText, mintNonce, mintRef, parseMessage, renderEnvelope, toSlackText } from '../src/protocol.mjs';
+import { HEADER_WIDTH, displayWidth, formatMessage, fromSlackText, mintNonce, mintRef, parseMessage, renderEnvelope, toSlackText } from '../src/protocol.mjs';
 
 test('a formatted message parses back to the same fields', () => {
     const rendered = formatMessage({ mark: '🔥', from: 'grkn', to: 'mira', text: 'ready when you are' });
@@ -126,13 +126,39 @@ test('agent traffic is addressed by its recipient, not by the text', () => {
     assert.match(agent('sinan'), /addressed=sinan/);
 });
 
-test('a sent message carries its handle at the end of the header line', () => {
-    const rendered = formatMessage({ mark: '🔥', from: 'grkn', to: 'sinan', text: 'the body', ref: 'k7m2pq' });
+test('a sent message carries its handle at the right edge of the header line', () => {
+    const rendered = formatMessage({
+        mark: '🔥', from: 'grkn', to: 'sinan', text: 'the body', ref: 'k7m2pq', channel: 'wms-agents',
+    });
+    const header = rendered.split('\n')[0];
 
-    assert.equal(rendered.split('\n')[0], '🔥 grkn => sinan @k7m2pq');
+    assert.ok(header.endsWith('wms-agents@k7m2pq'), header);
+    assert.equal(displayWidth(header), HEADER_WIDTH);
     assert.equal(parseMessage(rendered).ref, 'k7m2pq');
+    assert.equal(parseMessage(rendered).refChannel, 'wms-agents');
     assert.equal(parseMessage(rendered).to, 'sinan', 'the handle is not swallowed into the recipient');
     assert.equal(parseMessage(rendered).text, 'the body');
+});
+
+test('every header line ends at the same column, whatever the names are', () => {
+    const headers = [
+        { mark: '🔥', from: 'grkn', to: 'sinan', channel: 'wms-agents' },
+        { mark: '🧭', from: 'sinan', to: 'all', channel: 'wms-agents' },
+        { mark: '🧊', from: 'huso', to: 'grkn', channel: 'dev' },
+    ].map((head) => formatMessage({ ...head, text: 'body', ref: 'k7m2pq' }).split('\n')[0]);
+
+    assert.equal(new Set(headers.map(displayWidth)).size, 1, headers.join(' | '));
+});
+
+test('a name too long for the width pushes past it rather than being cut', () => {
+    const header = formatMessage({
+        mark: '🔥', from: 'a-very-long-agent-nickname', to: 'another-long-nickname',
+        text: 'body', ref: 'k7m2pq', channel: 'wms-agents',
+    }).split('\n')[0];
+
+    assert.ok(displayWidth(header) > HEADER_WIDTH);
+    assert.ok(header.includes('a-very-long-agent-nickname'), header);
+    assert.ok(header.endsWith(' wms-agents@k7m2pq'), header);
 });
 
 test('a message sent before handles existed still parses', () => {
@@ -149,7 +175,7 @@ test('the fence header names the handle when there is one', () => {
         to: 'grkn', text: 'body',
     };
 
-    assert.match(renderEnvelope(nonce, { ...item, ref: 'k7m2pq' }, 'grkn'), /ref=@k7m2pq/);
+    assert.match(renderEnvelope(nonce, { ...item, ref: 'k7m2pq' }, 'grkn'), /ref=agent-wire@k7m2pq/);
     assert.doesNotMatch(renderEnvelope(nonce, item, 'grkn'), /ref=/);
 });
 

@@ -30,10 +30,10 @@ const unlinkify = (s) => s.replace(/<((?:https?:\/\/|mailto:)[^|>]+)(\|[^>]*)?>/
 export const fromSlackText = (s) => unlinkify(String(s))
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 
-// A short handle printed at the end of the header line, so a human scrolling the
-// channel can say "read @k7m2pq" instead of pasting a timestamp. Like the rest of
-// the header it is DECORATION: unsigned, and anyone in the channel can type one.
-// It names a message, it never proves anything about it.
+// A short handle printed at the right edge of the header line, so a human
+// scrolling the channel can say "read wms-agents@k7m2pq" instead of pasting a
+// timestamp. Like the rest of the header it is DECORATION: unsigned, and anyone
+// in the channel can type one. It names a message, it never proves anything.
 //
 // The alphabet drops i l o 0 1, the pair a person retypes wrong.
 const REF_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
@@ -44,11 +44,41 @@ export const mintRef = () => Array.from(
     (byte) => REF_ALPHABET[byte % REF_ALPHABET.length],
 ).join('');
 
-export const formatMessage = ({ mark, from, to, text, ref }) =>
-    `${mark ? `${mark} ` : ''}${from} => ${to}${ref ? ` @${ref}` : ''}\n${toSlackText(text)}\n`;
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+// A terminal draws an emoji two columns wide and a box character one, so counting
+// characters misaligns any row holding an emoji nickname. Count columns instead.
+const WIDE = /^[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]/;
+const ZERO = /^[\u0300-\u036f\u200b-\u200d\ufe00-\ufe0f]/;
+
+export function displayWidth(text) {
+    let columns = 0;
+    for (const { segment } of graphemes.segment(String(text))) {
+        if (ZERO.test(segment)) continue;
+        columns += (WIDE.test(segment) || /\p{Extended_Pictographic}/u.test(segment)) ? 2 : 1;
+    }
+    return columns;
+}
+
+// The handle sits at a fixed column so a scrolled channel has one straight edge to
+// read down. Slack's font is proportional, so this is an approximation — but the
+// header is short and mostly latin, and approximate beats ragged.
+//
+// A long nickname pushes past the column rather than being cut. Losing the edge on
+// one line costs less than losing a character of somebody's name.
+export const HEADER_WIDTH = 60;
+
+export function formatMessage({ mark, from, to, text, ref, channel }) {
+    const left = `${mark ? `${mark} ` : ''}${from} => ${to}`;
+    if (!ref) return `${left}\n${toSlackText(text)}\n`;
+
+    const handle = `${channel ?? ''}@${ref}`;
+    const gap = Math.max(1, HEADER_WIDTH - displayWidth(left) - handle.length);
+    return `${left}${' '.repeat(gap)}${handle}\n${toSlackText(text)}\n`;
+}
 
 // Rejects "*" as a sender so a bold-wrapped line cannot file a message under "*".
-const HEADER = /^(?:(\S+)\s+)?([^\s=*]+)\s*=>\s*(\S+?)(?:\s+@([a-z2-9]{4,12}))?$/;
+const HEADER = /^(?:(\S+)\s+)?([^\s=*]+)\s*=>\s*(\S+?)(?:\s+([a-z0-9][\w.-]*)?@([a-z2-9]{4,12}))?$/;
 
 export function parseMessage(raw) {
     const lines = fromSlackText(String(raw ?? '').replace(/\r\n/g, '\n')).trim().split('\n');
@@ -59,7 +89,8 @@ export function parseMessage(raw) {
         mark: header[1] ?? '',
         from: header[2],
         to: header[3],
-        ref: header[4] ?? '',
+        refChannel: header[4] ?? '',
+        ref: header[5] ?? '',
         text: lines.slice(1).join('\n').trim(),
     };
 }
@@ -116,7 +147,7 @@ export function renderEnvelope(nonce, item, myNickname) {
         `from=${item.from}`,
         `kind=${item.kind}`,
         `authorship=${item.authorship}`,
-        ...(item.ref ? [`ref=@${item.ref}`] : []),
+        ...(item.ref ? [`ref=${item.channel ?? ''}@${item.ref}`] : []),
         `addressed=${addressee(item, myNickname)}`,
         `channel=${item.channel}`,
         `ts=${item.ts}`,

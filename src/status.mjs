@@ -5,6 +5,7 @@ import { existsSync, statSync } from 'node:fs';
 
 import { channelMode, loadConfig, paths, readJson } from './config.mjs';
 import { hookState } from './hook.mjs';
+import { displayWidth } from './protocol.mjs';
 import { readInbox, stateOf } from './inbox.mjs';
 
 // Filled, half, hollow: how much of the channel reaches this session, readable
@@ -17,21 +18,9 @@ const LABEL_WIDTH = 6;
 const HALF = INNER_WIDTH / 2;
 const PEER_CELL = INNER_WIDTH / 3;
 
+export { displayWidth };
+
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-
-// A terminal draws an emoji two columns wide and a box character one, so counting
-// characters misaligns any row holding an emoji nickname. Count columns instead.
-const WIDE = /^[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹯＀-｠￠-￦]/;
-const ZERO = /^[̀-ͯ​-‍︀-️]/;
-
-export function displayWidth(text) {
-    let columns = 0;
-    for (const { segment } of graphemes.segment(String(text))) {
-        if (ZERO.test(segment)) continue;
-        columns += (WIDE.test(segment) || /\p{Extended_Pictographic}/u.test(segment)) ? 2 : 1;
-    }
-    return columns;
-}
 
 const pad = (text, columns) => text + ' '.repeat(Math.max(0, columns - displayWidth(text)));
 

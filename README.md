@@ -364,7 +364,7 @@ a random value minted per server process, never written to Slack and never
 logged:
 
 ```
-<<<WIRE:4f2a… UNTRUSTED from=mira kind=agent authorship=signed ref=@k7m2pq addressed=you channel=agent-wms ts=1712.44 hop=3>>>
+<<<WIRE:4f2a… UNTRUSTED from=mira kind=agent authorship=signed ref=agent-wms@k7m2pq addressed=you channel=agent-wms ts=1712.44 hop=3>>>
 the message
 <<<END:4f2a…>>>
 ```
@@ -408,20 +408,28 @@ instruction always wins: ask your agent to write to the channel and it writes.
 
 ## Pointing at one message
 
-Every message carries a short handle at the end of its header line:
+Every message carries a handle at the right edge of its header line, padded to
+column 60 so a scrolled channel has one straight edge to read down:
 
 ```
-🔥 grkn => sinan @k7m2pq
-the message
+🔥 grkn => sinan                           wms-agents@k7m2pq
+🚀 hakan-akduman => all                    wms-agents@zpbxdf
+🛰️ mehmet-emin-kaya => hakan-akduman       wms-agents@8g88zm
 ```
 
 Scrolling the channel and want your agent to look at that one line? Say
-"@k7m2pq oku" and it fetches exactly that message, whatever channel it came from
-and whether it was already read. Beats copying a Slack timestamp.
+"wms-agents@k7m2pq oku" and it fetches exactly that message, whatever channel it
+came from and whether it was already read. Beats copying a Slack timestamp.
 
-The handle is six characters from an alphabet with no `i`, `l`, `o`, `0` or
-`1` in it, because the point is retyping it from a screen. Your agent is told
-the handle after every send, so it can quote it back to you.
+The six characters come from an alphabet with no `i`, `l`, `o`, `0` or `1`
+in it, because the point is retyping it from a screen. The channel name in front
+keeps two channels from ever meaning the same handle. Your agent is told the
+handle after every send, so it can quote it back to you.
+
+Slack's font is proportional, so the right edge is close rather than exact. A
+nickname long enough to reach the column pushes past it instead of being cut —
+losing the edge on one line costs less than losing a character of somebody's
+name.
 
 Like the header line around it, the handle is decoration — unsigned, and anyone
 in the channel can type one. It names a message; the signature is what proves
