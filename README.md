@@ -153,12 +153,27 @@ content share a page.
 
 ### What "per session" means
 
-A session is identified by its working directory, because that is the only thing
-a fresh `drain` process can see — it is launched again on every prompt and
-remembers nothing. So one project can run `read` while another runs `off`, with
-the same nickname, the same keys and the same Slack app behind both. Two windows
-open on one folder count as one session; set `AGENT_WIRE_SCOPE` to tell them
-apart.
+A session is identified by the client's own session id when the client publishes
+one. Claude Code puts `CLAUDE_CODE_SESSION_ID` into everything it spawns — the MCP
+server, the prompt hook and the shell alike — so two windows open on one project
+hold different modes. The nickname, the keys and the Slack app stay shared.
+
+A plain terminal has no session id, so a mode command there lands on the working
+directory instead. That entry is what a session which has chosen nothing falls
+back to, which makes the terminal the way to set a project's default:
+
+```bash
+cd ~/work/wms && agent-wire ask       # the default for this folder
+# then, inside one Claude Code session there
+agent-wire read                       # this session only, until it ends
+```
+
+The order is session, then folder, then the channel's own `mode` field, then
+`ask`. `AGENT_WIRE_SCOPE` overrides the lot when you want to name a session
+yourself.
+
+A session id is not written down anywhere, so a mode set inside a session is gone
+when that session ends. The folder default is the one that persists.
 
 Read and unread are per session too. They have to be: a session on `read` opens
 everything it is handed, and if that also marked the message read next door, an

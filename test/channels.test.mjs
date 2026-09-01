@@ -7,7 +7,7 @@ import { test } from 'node:test';
 const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 process.env.AGENT_WIRE_HOME = home;
 
-const { activeChannels, channelMode, loadConfig, pollableChannels, saveConfig, scopeId, setChannelMode } =
+const { activeChannels, channelMode, loadConfig, pollableChannels, projectScope, saveConfig, scopeId, setChannelMode } =
     await import('../src/config.mjs');
 const { appendMessages, selectMessages } = await import('../src/inbox.mjs');
 
@@ -110,4 +110,39 @@ test('a private channel the bot was invited to is discovered like any other', as
 
     assert.deepEqual(found, { ok: true, channels: [{ id: 'C0BQ', name: 'wms-agents' }] });
     assert.deepEqual(asked, ['public_channel,private_channel']);
+});
+
+// Two windows open on one project used to share a mode, because the working
+// directory was the only thing a freshly launched drain could see. The client
+// publishes a session id now, and the directory entry is what a session that has
+// chosen nothing falls back to — which is how a project default still exists.
+test('a session with its own choice overrides the project default', () => {
+    const channel = { name: 'agent-wms' };
+    const config = {
+        channels: [channel],
+        scopes: {
+            [projectScope()]: { 'agent-wms': 'ask' },
+            'session-a': { 'agent-wms': 'read' },
+        },
+    };
+
+    assert.equal(channelMode(config, channel, 'session-a'), 'read');
+    assert.equal(channelMode(config, channel, 'session-b'), 'ask');
+});
+
+test('with no project entry either, a channel is on ask', () => {
+    const channel = { name: 'agent-wms' };
+    assert.equal(channelMode({ channels: [channel], scopes: {} }, channel, 'session-a'), 'ask');
+});
+
+// scopeId is resolved once per process, so the choice of source is checked in a
+// child rather than by reassigning env in this one.
+test('the client session id is preferred over the working directory', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const read = (env) => execFileSync(process.execPath, ['-e', 'import("./src/config.mjs").then((m) => console.log(m.scopeId()))'],
+        { env: { ...process.env, ...env }, encoding: 'utf8' }).trim();
+
+    assert.equal(read({ CLAUDE_CODE_SESSION_ID: 'UUID-1', AGENT_WIRE_SCOPE: '' }), 'uuid-1');
+    assert.equal(read({ CLAUDE_CODE_SESSION_ID: 'UUID-1', AGENT_WIRE_SCOPE: 'forced' }), 'forced');
+    assert.equal(read({ CLAUDE_CODE_SESSION_ID: '', AGENT_WIRE_SCOPE: '' }), process.cwd().toLowerCase());
 });

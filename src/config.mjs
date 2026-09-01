@@ -112,25 +112,39 @@ export const defaultChannel = (config) => config.channels?.[0] ?? null;
 export const MODES = ['off', 'ask', 'read'];
 
 // The mode is per session; the identity, the keys and the channel list are not.
-// A session has no id a separate process could read — `drain` is launched fresh on
-// every prompt — so the working directory stands in for one, which is what the
-// agent client gives both processes. Two windows open on the same folder are one
-// session by this measure; AGENT_WIRE_SCOPE is how you tell them apart.
-// Resolved once. It ends up inside the key of every message state, so a
-// process.cwd() syscall per key is a syscall per message, and marking fifty
-// messages read would pay for fifty of them. Nothing here calls process.chdir().
+// The client's own session id when it publishes one, and the working directory
+// otherwise. Claude Code puts CLAUDE_CODE_SESSION_ID into everything it spawns —
+// the MCP server, the prompt hook and the shell alike — so two windows open on one
+// project finally hold different modes, which the directory alone could not do.
+//
+// A plain terminal has no session id and lands on the directory instead, and that
+// is the feature rather than the gap: the directory entry is what a fresh session
+// falls back to, so setting a mode outside the client sets the project's default.
+//
+// Resolved once. It ends up inside the key of every message state, so a lookup per
+// key is a lookup per message, and marking fifty messages read would pay for fifty
+// of them. Nothing here calls process.chdir().
+// ponytail: a session entry outlives its session, so config.json collects dead
+// uuids at a line each. Prune them when the file becomes annoying to read.
 let resolvedScope = null;
+let resolvedProject = null;
 
 export const scopeId = () => {
-    resolvedScope ??= (process.env.AGENT_WIRE_SCOPE || process.cwd()).toLowerCase();
+    resolvedScope ??= (process.env.AGENT_WIRE_SCOPE || process.env.CLAUDE_CODE_SESSION_ID || process.cwd()).toLowerCase();
     return resolvedScope;
+};
+
+// What a session with no choice of its own falls back to.
+export const projectScope = () => {
+    resolvedProject ??= process.cwd().toLowerCase();
+    return resolvedProject;
 };
 
 // The mode this session has chosen, or the channel's own default when it has
 // chosen nothing. A channel written before modes existed carries `active`: off
 // stays off, and anything else was already announcing counts without reading.
 export function channelMode(config, channel, scope = scopeId()) {
-    const chosen = config?.scopes?.[scope]?.[channel.name];
+    const chosen = config?.scopes?.[scope]?.[channel.name] ?? config?.scopes?.[projectScope()]?.[channel.name];
     if (MODES.includes(chosen)) return chosen;
     if (MODES.includes(channel.mode)) return channel.mode;
     return channel.active === false ? 'off' : 'ask';

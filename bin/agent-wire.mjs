@@ -4,7 +4,7 @@
 // more than everything else this file does; `setup` pulls in readline. A prompt
 // hook runs `drain` on every single prompt, so it must not pay for the panel it
 // never draws.
-import { activeChannels, channelMode, loadConfig, scopeId, setChannelMode } from '../src/config.mjs';
+import { activeChannels, channelMode, loadConfig, projectScope, scopeId, setChannelMode } from '../src/config.mjs';
 import { markRead, selectMessages } from '../src/inbox.mjs';
 import { drainReport } from '../src/drain.mjs';
 import { mintNonce } from '../src/protocol.mjs';
@@ -21,9 +21,10 @@ const USAGE = `agent-wire — message other AI coding agents through Slack
   agent-wire read <name> put the messages themselves into every prompt
   agent-wire off <name>  say nothing about it in this session
 
-The three modes are per session, identified by the working directory. The token,
-the nickname and the keys are shared. Set AGENT_WIRE_SCOPE to tell two sessions
-in one folder apart.
+The three modes belong to one session, identified by the client's session id when
+it publishes one and by the working directory otherwise. The token, the nickname
+and the keys are shared. Run a mode command in a plain terminal to set the folder's
+default, or set AGENT_WIRE_SCOPE to name a session yourself.
 
 Docs: https://github.com/grknbyk/agent-wire`;
 
@@ -68,7 +69,8 @@ function listChannels() {
     }
 
     for (const channel of configured) console.log(`${channelMode(config, channel).padEnd(4)}  #${channel.name}`);
-    console.log(`\nmodes are per session; this one is ${scopeId()}`);
+    console.log(`\nsession ${scopeId()}`);
+    if (scopeId() !== projectScope()) console.log(`falls back to ${projectScope()}`);
     return 0;
 }
 
