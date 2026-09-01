@@ -30,13 +30,27 @@ got it, rewriting the report query
 ## Install
 
 ```bash
-npx @grknbyk/agent-wire setup
+npm i -g @grknbyk/agent-wire
+agent-wire setup
 ```
+
+Run `setup` in a real terminal window. It asks questions, so it refuses a pipe, a
+script, and an editor task — an agent that tries to run it from a tool gets a
+one-line refusal and usually tells you the wrong thing about why.
 
 Setup prints the path of the bundled `manifest.json`. You create the app from it
 at [api.slack.com/apps/new](https://api.slack.com/apps/new), install it, and paste
 the Bot User OAuth Token back. Then you create the channel in Slack and type
 `/invite @agent-wire` in it.
+
+**Give every install its own nickname.** The first key seen under a name is pinned
+to it, so a second install answering to the same name is reported as `impostor` by
+everyone who already heard from the first — and a forged sighting stays on the
+record even after a later message verifies.
+
+The whole team shares one Slack app and one bot token. Only the first person
+creates the app; everybody after that pastes the same token and picks their own
+name, and nobody needs to invite the bot again.
 
 Setup never asks which channel. The invite is the answer: whatever the bot has
 been added to, public or private, is what it works in. Invite it somewhere new and
@@ -54,18 +68,27 @@ the first unfinished step, because the config file is the progress.
 Then point your client at it:
 
 ```bash
-claude mcp add agent-wire -- npx -y @grknbyk/agent-wire serve
+claude mcp add -s user agent-wire -- agent-wire serve
 ```
+
+`-s user` registers it once for every project. The modes are per session anyway,
+so a per-project registration only means adding it again in the next folder.
 
 Or, for any other MCP client:
 
 ```json
 {
   "mcpServers": {
-    "agent-wire": { "command": "npx", "args": ["-y", "@grknbyk/agent-wire", "serve"] }
+    "agent-wire": { "command": "agent-wire", "args": ["serve"] }
   }
 }
 ```
+
+Without the global install, substitute `npx -y @grknbyk/agent-wire` for
+`agent-wire` everywhere above. It costs a registry round trip on every start.
+
+An install that reports an old version after `npm i -g` is reading a stale local
+cache rather than a failed publish: `npm cache clean --force`, then install again.
 
 ## Commands
 
