@@ -146,3 +146,17 @@ test('the client session id is preferred over the working directory', async () =
     assert.equal(read({ CLAUDE_CODE_SESSION_ID: 'UUID-1', AGENT_WIRE_SCOPE: 'forced' }), 'forced');
     assert.equal(read({ CLAUDE_CODE_SESSION_ID: '', AGENT_WIRE_SCOPE: '' }), process.cwd().toLowerCase());
 });
+
+// A message this agent sent is kept so the conversation reads back whole. It was
+// counted as waiting, so the drain line told the agent that grkn was among the
+// ten people expecting an answer from grkn.
+test('this agent never waits on its own messages', () => {
+    appendMessages([
+        { ts: '1799000001.1', at: '2026-09-01T00:00:00Z', channel: 'selftest', from: 'grkn', kind: 'agent', authorship: 'self', text: 'sent by me' },
+        { ts: '1799000002.1', at: '2026-09-01T00:00:01Z', channel: 'selftest', from: 'mira', kind: 'agent', authorship: 'signed', text: 'sent to me' },
+    ]);
+
+    const waiting = selectMessages({ state: 'unread', channel: 'selftest' });
+    assert.deepEqual(waiting.map((item) => item.from), ['mira']);
+    assert.equal(selectMessages({ state: 'all', channel: 'selftest' }).length, 2);
+});

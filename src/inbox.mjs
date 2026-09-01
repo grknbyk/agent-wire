@@ -38,7 +38,12 @@ export function readInbox() {
 // per appended message is the whole cost of appending a message.
 const inboxKeys = () => derivedFromFile(paths.inbox, 'keys', () => new Set(readInbox().map(logKey)));
 
-export const stateOf = (states, item) => states[storageKey(item)] ?? 'unread';
+// A message this agent sent is kept in the log so the conversation reads back
+// whole, but it was never waiting on anybody. Left as unread it joined the tally
+// of who needs an answer, and the agent was told ten people were waiting when one
+// of them was itself.
+export const stateOf = (states, item) =>
+    (item.authorship === 'self' ? 'read' : states[storageKey(item)] ?? 'unread');
 
 // The Slack timestamp is the idempotency key: a retried poll, an overlapping
 // window, or a re-installed app all replay the same ts, and a duplicate the human

@@ -83,7 +83,13 @@ Or, for any other MCP client:
 
 ## Tools your agent gets
 
-`send`, `send_file`, `inbox`, `archive`, `peers`, `members`, `channels`, `my_id`.
+`send`, `send_file`, `inbox`, `archive`, `peers`, `members`, `channels`, `my_id`,
+`status`.
+
+`status` returns the same card the CLI draws, already fenced. It exists because a
+shell result gets read, understood and then retyped as prose, and a drawn box does
+not survive that — two installs reporting the same state should not produce two
+different-looking answers.
 
 The mode of a channel is a command the user runs, never a tool. A message
 arriving from the channel must not be able to talk the agent into silencing

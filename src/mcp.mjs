@@ -65,6 +65,11 @@ const TOOLS = [
         inputSchema: { type: 'object', properties: {} },
     },
     {
+        name: 'status',
+        description: 'The status card: identity, channels with their modes, who has written, and when the last poll ran. Print what this returns exactly as it arrives, inside a code block. It is a drawn box, so retyping the fields loses it.',
+        inputSchema: { type: 'object', properties: {} },
+    },
+    {
         name: 'peers',
         description: 'Agent names seen in the channels so far, with the key pinned to each.',
         inputSchema: { type: 'object', properties: {} },
@@ -154,11 +159,26 @@ const MODE_SUMMARY = {
     read: 'the messages themselves, in every prompt',
 };
 
-const PROMPTS = MODES.map((mode) => ({
-    name: mode,
-    description: `Set a channel to ${mode} for this session — ${MODE_SUMMARY[mode]}`,
-    arguments: [{ name: 'channel', description: 'Channel name. Omit it when only one is configured.', required: false }],
-}));
+const PROMPTS = [
+    ...MODES.map((mode) => ({
+        name: mode,
+        description: `Set a channel to ${mode} for this session — ${MODE_SUMMARY[mode]}`,
+        arguments: [{ name: 'channel', description: 'Channel name. Omit it when only one is configured.', required: false }],
+    })),
+    { name: 'status', description: 'Show the agent-wire status card', arguments: [] },
+];
+
+const STATUS_INSTRUCTION = {
+    description: 'Show the agent-wire status card',
+    messages: [{
+        role: 'user',
+        content: {
+            type: 'text',
+            text: 'Call the agent-wire status tool and print what it returns verbatim, inside a code block.'
+                + ' Do not summarise it, do not retype the fields, do not reformat the box. The drawing is the answer.',
+        },
+    }],
+};
 
 function modeInstruction(mode, channel) {
     const command = `agent-wire ${mode}${channel ? ` ${channel}` : ''}`;
@@ -326,6 +346,15 @@ async function call(name, args, session) {
     // refusal and tells the user the wrong thing.
     if (!config) return 'agent-wire is not configured yet. Tell the user to run `agent-wire setup` in a real terminal window — it asks questions, so it will not run from a tool. Install it first with `npm i -g @grknbyk/agent-wire` if the command is missing.';
 
+    // The card reaches the user through a tool rather than a shell, because a
+    // shell result gets read, understood and then retyped as prose — and the box
+    // does not survive that. Fenced here so it arrives ready to pass on.
+    if (name === 'status') {
+        const { renderStatus } = await import('./status.mjs');
+        return 'Show this to the user exactly as it is, in a code block. Do not summarise it and do not retype the numbers.\n\n'
+            + `\`\`\`\n${renderStatus(config).trim()}\n\`\`\``;
+    }
+
     if (name === 'my_id') {
         const channels = (config.channels ?? []).map((channel) => `#${channel.name}`).join(', ') || 'none';
         return `${config.mark} ${config.nickname} — key ${config.public_key.slice(0, FINGERPRINT_CHARS)}… — channels: ${channels}`;
@@ -430,7 +459,10 @@ export function serve() {
         if (message.method === 'prompts/get') {
             const asked = PROMPTS.find((prompt) => prompt.name === message.params.name);
             if (!asked) return write({ jsonrpc: '2.0', id: message.id, error: { code: -32602, message: `no prompt named ${message.params.name}` } });
-            return write({ jsonrpc: '2.0', id: message.id, result: modeInstruction(asked.name, message.params.arguments?.channel) });
+            const answer = asked.name === 'status'
+                ? STATUS_INSTRUCTION
+                : modeInstruction(asked.name, message.params.arguments?.channel);
+            return write({ jsonrpc: '2.0', id: message.id, result: answer });
         }
         if (message.method === 'ping') return write({ jsonrpc: '2.0', id: message.id, result: {} });
         if (message.method === 'tools/call') {

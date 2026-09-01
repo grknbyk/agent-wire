@@ -37,7 +37,7 @@ test('the three modes are offered as prompts, not as tools', async () => {
     ]);
 
     assert.deepEqual(handshake.result.capabilities, { tools: {}, prompts: {} });
-    assert.deepEqual(listed.result.prompts.map((prompt) => prompt.name), ['off', 'ask', 'read']);
+    assert.deepEqual(listed.result.prompts.map((prompt) => prompt.name), ['off', 'ask', 'read', 'status']);
     assert.equal(tools.result.tools.filter((tool) => ['off', 'ask', 'read'].includes(tool.name)).length, 0);
 });
 
