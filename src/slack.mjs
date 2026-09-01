@@ -202,10 +202,10 @@ async function downloadAll(client, files) {
 }
 
 async function downloadById(client, fileId) {
-    const info = await client.form('files.info', { file: fileId });
-    if (!info.ok) return [];
+    const fileInfo = await client.form('files.info', { file: fileId });
+    if (!fileInfo.ok) return [];
 
-    const saved = await downloadAttachment(client, info.file);
+    const saved = await downloadAttachment(client, fileInfo.file);
     return saved ? [saved] : [];
 }
 

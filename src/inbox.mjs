@@ -98,8 +98,8 @@ const STATE_KEYS_MAX = 8000;
 const STATE_KEYS_KEEP = 6000;
 
 const scopeOfKey = (key) => {
-    const bar = key.indexOf('|');
-    return bar === -1 ? '' : key.slice(0, bar); // written before scopes existed
+    const separator = key.indexOf('|');
+    return separator === -1 ? '' : key.slice(0, separator); // written before scopes existed
 };
 
 function prunedStates(states) {

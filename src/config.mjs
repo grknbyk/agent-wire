@@ -192,5 +192,5 @@ export function setChannelMode(name, mode) {
 export function findChannel(config, wanted) {
     if (!wanted) return defaultChannel(config);
     const name = String(wanted).replace(/^#/, '').toLowerCase();
-    return config.channels?.find((c) => c.name.toLowerCase() === name || c.id === wanted) ?? null;
+    return config.channels?.find((channel) => channel.name.toLowerCase() === name || channel.id === wanted) ?? null;
 }

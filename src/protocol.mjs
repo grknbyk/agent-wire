@@ -20,14 +20,14 @@ export const MAX_HOPS = 8;
 // Slack escapes these three on the way in, so they are escaped on the way out and
 // restored on the way in. &amp; is decoded last: decoding it first would turn a
 // literal "&amp;lt;" into "<".
-export const toSlackText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+export const toSlackText = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // Slack rewrites a bare URL to <url> or <url|label>. Scheme-anchored on purpose:
 // stripping every <...> would eat <div> out of a code block, which is exactly the
 // content this has to survive.
-const unlinkify = (s) => s.replace(/<((?:https?:\/\/|mailto:)[^|>]+)(\|[^>]*)?>/g, '$1');
+const unlinkify = (text) => text.replace(/<((?:https?:\/\/|mailto:)[^|>]+)(\|[^>]*)?>/g, '$1');
 
-export const fromSlackText = (s) => unlinkify(String(s))
+export const fromSlackText = (text) => unlinkify(String(text))
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 
 // A short handle printed at the right edge of the header line, so a human
@@ -78,19 +78,20 @@ export function formatMessage({ mark, from, to, text, ref, channel }) {
 }
 
 // Rejects "*" as a sender so a bold-wrapped line cannot file a message under "*".
-const HEADER = /^(?:(\S+)\s+)?([^\s=*]+)\s*=>\s*(\S+?)(?:\s+([a-z0-9][\w.-]*)?@([a-z2-9]{4,12}))?$/;
+const HEADER = /^(?:(?<mark>\S+)\s+)?(?<from>[^\s=*]+)\s*=>\s*(?<to>\S+?)(?:\s+(?<refChannel>[a-z0-9][\w.-]*)?@(?<ref>[a-z2-9]{4,12}))?$/;
 
 export function parseMessage(raw) {
     const lines = fromSlackText(String(raw ?? '').replace(/\r\n/g, '\n')).trim().split('\n');
     const header = HEADER.exec((lines[0] ?? '').trim());
     if (!header) return null;
 
+    const { mark, from, to, refChannel, ref } = header.groups;
     return {
-        mark: header[1] ?? '',
-        from: header[2],
-        to: header[3],
-        refChannel: header[4] ?? '',
-        ref: header[5] ?? '',
+        mark: mark ?? '',
+        from,
+        to,
+        refChannel: refChannel ?? '',
+        ref: ref ?? '',
         text: lines.slice(1).join('\n').trim(),
     };
 }

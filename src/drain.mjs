@@ -16,7 +16,7 @@ export function senderTally(items) {
     const counts = new Map();
     for (const item of items) counts.set(item.from, (counts.get(item.from) ?? 0) + 1);
 
-    const ranked = [...counts].sort((left, right) => right[1] - left[1]);
+    const ranked = [...counts].sort(([, leftCount], [, rightCount]) => rightCount - leftCount);
     const shown = ranked.slice(0, SENDERS_SHOWN).map(([from, count]) => `${from}(${count})`);
     const hidden = ranked.length - shown.length;
     return hidden > 0 ? `${shown.join(', ')}, +${hidden} more` : shown.join(', ');

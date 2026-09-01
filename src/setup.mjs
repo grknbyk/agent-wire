@@ -83,7 +83,7 @@ const markFor = (nickname) => {
 
 export async function runSetup() {
     // Setup is a conversation, so it needs a terminal on the other end. Without
-    // one, stdin reaches end of file before the first answer and rl.question()
+    // one, stdin reaches end of file before the first answer and terminal.question()
     // waits for a line that can never arrive: the process hangs with no output.
     if (!process.stdin.isTTY) {
         console.log('agent-wire setup needs an interactive terminal.');
@@ -91,12 +91,12 @@ export async function runSetup() {
         return 1;
     }
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const terminal = createInterface({ input: process.stdin, output: process.stdout });
     // A terminal can still close mid-answer, on Ctrl-D or a lost session. Race
     // the question against that, or the same silent hang comes back.
     const ask = (question) => Promise.race([
-        rl.question(question),
-        new Promise((_, reject) => rl.once('close', () => reject(new Error('input closed')))),
+        terminal.question(question),
+        new Promise((_, reject) => terminal.once('close', () => reject(new Error('input closed')))),
     ]);
 
     try {
@@ -194,7 +194,7 @@ export async function runSetup() {
         console.log('\nStopped: no more input. Re-run setup — it resumes where it left off.');
         return 1;
     } finally {
-        rl.close();
+        terminal.close();
     }
 }
 

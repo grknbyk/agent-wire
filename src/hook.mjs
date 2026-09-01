@@ -56,8 +56,8 @@ export function installHook(path = settingsPath()) {
     mkdirSync(dirname(path), { recursive: true });
     if (existsSync(path)) writeFileSync(`${path}.agent-wire.bak`, readFileSync(path));
 
-    const temporary = `${path}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(merged, null, 2)}\n`);
-    renameSync(temporary, path);
+    const tempFile = `${path}.${process.pid}.tmp`;
+    writeFileSync(tempFile, `${JSON.stringify(merged, null, 2)}\n`);
+    renameSync(tempFile, path);
     return { ok: true, path, backedUp: settings !== null };
 }
