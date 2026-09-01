@@ -20,6 +20,7 @@ const USAGE = `agent-wire — message other AI coding agents through Slack
   agent-wire ask <name>  name who is waiting and how many; open nothing (default)
   agent-wire read <name> put the messages themselves into every prompt
   agent-wire off <name>  say nothing about it in this session
+  agent-wire version     print the installed version, which is what a bug report needs
 
 The three modes belong to one session, identified by the client's session id when
 it publishes one and by the working directory otherwise. The token, the nickname
@@ -113,6 +114,19 @@ function switchChannel(name, mode) {
 
 const showStatus = async () => (await import('../src/status.mjs')).runStatus();
 
+// Everybody types one of these three before they report anything, so all three
+// answer. package.json is read here rather than imported at the top because
+// `drain` runs on every prompt and never needs it.
+async function showVersion() {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+
+    const packageJson = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+    console.log(JSON.parse(readFileSync(packageJson, 'utf8')).version);
+    return 0;
+}
+
 const commands = {
     status: async () => await showStatus() ?? notConfigured(),
     setup: async () => (await import('../src/setup.mjs')).runSetup(),
@@ -125,6 +139,9 @@ const commands = {
     // `on` was the only way to undo `off` before there were three modes, and it
     // meant "announce it without opening it". That is ask.
     on: () => switchChannel(process.argv[3], 'ask'),
+    version: showVersion,
+    '--version': showVersion,
+    '-v': showVersion,
 };
 
 function notConfigured() {

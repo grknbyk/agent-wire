@@ -169,7 +169,7 @@ export async function runSetup() {
 export async function runDoctor() {
     const config = loadConfig();
     if (!config?.bot_token) {
-        console.log('not configured — run `npx @grknbyk/agent-wire setup`');
+        console.log('not configured yet — run `agent-wire setup`');
         return 1;
     }
 

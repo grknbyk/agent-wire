@@ -92,3 +92,26 @@ test('findByTs sees a message appended after the log was cached', () => {
     appendMessages([message('1700000007.0001')]);
     assert.equal(findByTs('1700000007.0001').text, 'message 1700000007.0001');
 });
+
+// The session id made the key space unbounded: one key per message per session,
+// measured at 14 MB and 79 ms per mark after a thousand sessions. Whole scopes go
+// now, oldest first, and the scope doing the writing is never a candidate.
+test('read state stays bounded as sessions pile up, and this session survives', async () => {
+    const { randomUUID } = await import('node:crypto');
+    const { markRead } = await import('../src/inbox.mjs');
+    const { paths, scopeId, writeJson } = await import('../src/config.mjs');
+
+    const states = {};
+    for (let session = 0; session < 200; session++) {
+        const scope = randomUUID();
+        for (let message = 0; message < 200; message++) states[`${scope}|old:1000${String(message).padStart(4, '0')}.1`] = 'read';
+    }
+    writeJson(paths.states, states);
+
+    markRead([{ channel: 'mine', ts: '1788999999.1' }]);
+
+    const written = JSON.parse((await import('node:fs')).readFileSync(paths.states, 'utf8'));
+    const keys = Object.keys(written);
+    assert.ok(keys.length <= 8000, `expected at most 8000 keys, got ${keys.length}`);
+    assert.equal(written[`${scopeId()}|mine:1788999999.1`], 'read');
+});

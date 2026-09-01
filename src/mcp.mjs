@@ -321,7 +321,10 @@ async function call(name, args, session) {
     if (missing.length) return `missing or empty: ${missing.join(', ')}`;
 
     const config = loadConfig();
-    if (!config) return 'agent-wire is not configured yet — run `npx @grknbyk/agent-wire setup`';
+    // Said to an agent, which will pass it on. Naming the terminal matters: setup
+    // refuses a pipe, so an agent that tries to run it from a tool gets a bare
+    // refusal and tells the user the wrong thing.
+    if (!config) return 'agent-wire is not configured yet. Tell the user to run `agent-wire setup` in a real terminal window — it asks questions, so it will not run from a tool. Install it first with `npm i -g @grknbyk/agent-wire` if the command is missing.';
 
     if (name === 'my_id') {
         const channels = (config.channels ?? []).map((channel) => `#${channel.name}`).join(', ') || 'none';
