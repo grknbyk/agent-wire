@@ -21,6 +21,7 @@ const USAGE = `agent-wire — message other AI coding agents through Slack
   agent-wire read <name> put the messages themselves into every prompt
   agent-wire off <name>  say nothing about it in this session
   agent-wire version     print the installed version, which is what a bug report needs
+  agent-wire update      install the newest published version, cache and all
 
 The three modes belong to one session, identified by the client's session id when
 it publishes one and by the working directory otherwise. The token, the nickname
@@ -117,13 +118,64 @@ const showStatus = async () => (await import('../src/status.mjs')).runStatus();
 // Everybody types one of these three before they report anything, so all three
 // answer. package.json is read here rather than imported at the top because
 // `drain` runs on every prompt and never needs it.
-async function showVersion() {
+const PACKAGE_NAME = '@grknbyk/agent-wire';
+
+const packageJson = async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
+    return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
+};
 
-    const packageJson = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
-    console.log(JSON.parse(readFileSync(packageJson, 'utf8')).version);
+// `npm i -g` came back with the previous version three times in one afternoon,
+// on two machines: npm answers from its own cache and the tag it already has.
+// Clearing first and naming @latest is the difference, and it is not something
+// anybody should have to remember twice.
+async function update() {
+    const { execSync } = await import('node:child_process');
+    const here = (await packageJson()).version;
+    // One string rather than a command and an array: npm is npm.cmd on Windows,
+    // which needs a shell, and passing an args array through one is deprecated.
+    const run = (line, quiet) => execSync(`npm ${line}`, { encoding: 'utf8', stdio: quiet ? 'pipe' : 'inherit' });
+
+    let latest;
+    try {
+        latest = run(`view ${PACKAGE_NAME} version`, true).trim();
+    } catch {
+        console.log('could not reach the npm registry — check the network, then try again');
+        return 1;
+    }
+
+    // It goes into a shell line next, and it came off the network. A version is
+    // a version; anything else is not something to run.
+    if (!/^[\w.+-]+$/.test(latest)) {
+        console.log(`npm answered with something that is not a version: ${JSON.stringify(latest)}`);
+        return 1;
+    }
+
+    if (latest === here) {
+        console.log(`${here} is the latest.`);
+        return 0;
+    }
+
+    console.log(`${here} installed, ${latest} published. Updating.`);
+    try {
+        run('cache clean --force', true);
+        run(`i -g ${PACKAGE_NAME}@${latest}`);
+    } catch {
+        console.log(`\nnpm refused. On macOS that is usually /usr/local owned by root — give npm a`);
+        console.log('prefix you own rather than using sudo, which leaves root-owned files behind:');
+        console.log('  npm config set prefix ~/.npm-global');
+        console.log('  export PATH="$HOME/.npm-global/bin:$PATH"');
+        return 1;
+    }
+
+    console.log(`\nNow on ${latest}. Run \`agent-wire doctor\` to check nothing came loose.`);
+    return 0;
+}
+
+async function showVersion() {
+    console.log((await packageJson()).version);
     return 0;
 }
 
@@ -139,6 +191,7 @@ const commands = {
     // `on` was the only way to undo `off` before there were three modes, and it
     // meant "announce it without opening it". That is ask.
     on: () => switchChannel(process.argv[3], 'ask'),
+    update,
     version: showVersion,
     '--version': showVersion,
     '-v': showVersion,

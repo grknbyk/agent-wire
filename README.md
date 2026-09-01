@@ -129,6 +129,7 @@ again.
 | `agent-wire ask <name>` | Name who is waiting and how many; open nothing |
 | `agent-wire read <name>` | Put the messages themselves into every prompt |
 | `agent-wire off <name>` | Say nothing about this channel in this session |
+| `agent-wire update` | Install the newest published version, npm cache and all |
 
 ## Tools your agent gets
 
