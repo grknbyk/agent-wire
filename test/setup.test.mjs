@@ -7,6 +7,9 @@ import { test } from 'node:test';
 
 const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 process.env.AGENT_WIRE_HOME = home;
+// The hook lives in the client config, so point that at the sandbox too — a test
+// must never reach into the real ~/.claude/settings.json.
+process.env.AGENT_WIRE_CLIENT_SETTINGS = join(home, 'settings.json');
 
 const { loadConfig, saveConfig } = await import('../src/config.mjs');
 const { runDoctor, runSetup } = await import('../src/setup.mjs');
@@ -51,7 +54,7 @@ const quietly = async (run) => {
 // Setup used to ask for a channel by name, and got told the bot was in no channel
 // by that name whenever the team had made theirs private.
 test('setup adopts every channel the bot is in, private ones included', async () => {
-    const stop = types(['xoxb-fake-token', 'mira', ':peach:']);
+    const stop = types(['xoxb-fake-token', 'mira', ':peach:', 'y']);
     const exit = await quietly(runSetup);
     stop();
 
@@ -75,4 +78,26 @@ test('doctor names the missing step when setup was quit halfway', async () => {
 
     assert.equal(await quietly(runDoctor), 1);
     saveConfig(finished);
+});
+
+// The modes were a setting with nothing behind them: `read` delivered through a
+// prompt hook that nothing installed, audited, or admitted was missing.
+test('setup installs the prompt hook that read and ask are delivered by', async () => {
+    const { hookState } = await import('../src/hook.mjs');
+    const written = JSON.parse((await import('node:fs')).readFileSync(process.env.AGENT_WIRE_CLIENT_SETTINGS, 'utf8'));
+
+    assert.equal(hookState(), 'installed');
+    assert.match(JSON.stringify(written.hooks.UserPromptSubmit), /agent-wire drain/);
+});
+
+test('doctor fails, rather than reassures, when nothing delivers', async () => {
+    const { writeFileSync, readFileSync } = await import('node:fs');
+    const settings = process.env.AGENT_WIRE_CLIENT_SETTINGS;
+    const installed = readFileSync(settings, 'utf8');
+
+    writeFileSync(settings, JSON.stringify({ hooks: {} }));
+    assert.equal(await quietly(runDoctor), 1);
+
+    writeFileSync(settings, installed);
+    assert.equal(await quietly(runDoctor), 0);
 });

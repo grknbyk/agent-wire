@@ -4,6 +4,7 @@
 import { existsSync, statSync } from 'node:fs';
 
 import { channelMode, loadConfig, paths, readJson } from './config.mjs';
+import { hookState } from './hook.mjs';
 import { readInbox, stateOf } from './inbox.mjs';
 
 // Filled, half, hollow: how much of the channel reaches this session, readable
@@ -159,8 +160,16 @@ export function renderStatus(config) {
         pair('workspace', config.team ?? config.team_id ?? '(unknown)', 'poll', lastPoll()),
         `└${'─'.repeat(INNER_WIDTH + 2)}┘`,
     );
+    // A mode is a setting; the prompt hook is what acts on it. Printing "read,
+    // 5 unread" while nothing delivers is the panel saying the thing works when it
+    // has not said a word, so the box tells on itself.
+    const listening = (config.channels ?? []).filter((channel) => channelMode(config, channel) !== 'off');
+    const warning = listening.length > 0 && hookState() !== 'installed'
+        ? `\n  nothing is delivering: no prompt hook. \`agent-wire doctor\` prints the fix.`
+        : '';
+
     // The leading blank line keeps the box off the command that produced it.
-    return `\n${lines.join('\n')}`;
+    return `\n${lines.join('\n')}${warning}`;
 }
 
 export function runStatus() {

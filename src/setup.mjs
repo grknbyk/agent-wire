@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 
 import { loadConfig, patchConfig, paths } from './config.mjs';
 import { joinedChannels, probeToken, slackClient } from './slack.mjs';
+import { hookSnippet, hookState, installHook, settingsPath } from './hook.mjs';
 import { FINGERPRINT_CHARS, generateKeypair } from './identity.mjs';
 import { formatMessage } from './protocol.mjs';
 
@@ -29,6 +30,13 @@ const EXPLANATIONS = {
 };
 
 const explain = (reason) => EXPLANATIONS[reason] ?? `Slack said: ${reason}`;
+
+const DELIVERY_REPORT = {
+    installed: 'delivery   ok, the prompt hook is installed',
+    missing: 'delivery   MISSING — read and ask deliver nothing without the prompt hook',
+    unreadable: 'delivery   UNKNOWN — the client settings file is not valid JSON, so the hook cannot be checked',
+    'no-client': 'delivery   no Claude Code settings here; another client needs its own hook, and the inbox tool works either way',
+};
 
 // The invite is the whole decision, so setup and doctor read the channels the bot
 // is in rather than asking a human to type a name correctly. Slack owns the id and
@@ -148,6 +156,25 @@ export async function runSetup() {
             await client.json('chat.postMessage', { channel: channel.id, text: hello });
         }
 
+        // Offered rather than written. This is the user's own client config, and
+        // every other key in it belongs to somebody else.
+        // Not just `missing`: a machine whose client has never written a settings
+        // file answers `no-client`, and that is the first install of all — exactly
+        // the one that needs the offer. installHook creates the file.
+        if (hookState() !== 'installed') {
+            console.log('\nread and ask are delivered by a hook that runs before every prompt.');
+            console.log('Without it a channel sits on read with messages waiting and never says a word.');
+            const answer = await ask(`Add it to ${settingsPath()}? [Y/n]: `);
+            if (/^n/i.test(answer.trim())) {
+                console.log('Skipped. `agent-wire doctor` prints the snippet whenever you want it.');
+            } else {
+                const written = installHook();
+                console.log(written.ok
+                    ? `Added.${written.backedUp ? ' The previous file is kept as settings.json.agent-wire.bak.' : ''} Restart the client to pick it up.`
+                    : `Not added: ${written.reason}`);
+            }
+        }
+
         console.log(`\nDone. You are ${config.mark} ${config.nickname} in ${channelList(adopted.channels)}.`);
         console.log(`Config: ${paths.config}`);
         console.log('\nAdd this to your MCP client (Claude Code: `claude mcp add agent-wire -- npx -y @grknbyk/agent-wire serve`):');
@@ -195,6 +222,16 @@ export async function runDoctor() {
     const isNew = new Set(adopted.added.map((channel) => channel.id));
     for (const channel of adopted.channels) {
         console.log(`channel    #${channel.name} ok${isNew.has(channel.id) ? ' (new, added to config)' : ''}`);
+    }
+
+    // The mode is a setting; the hook is what acts on it. A channel reading `read`
+    // with five unread and no hook behind it says the thing is working when it has
+    // not delivered a word, so this is a failure and not a note.
+    const delivery = hookState();
+    console.log(DELIVERY_REPORT[delivery]);
+    if (delivery === 'missing') {
+        console.log(`\nAdd this to ${settingsPath()}, or re-run setup:\n${hookSnippet()}`);
+        return 1;
     }
     return 0;
 }

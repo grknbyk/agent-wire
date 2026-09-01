@@ -287,6 +287,40 @@ Only the person running the agent can switch a channel, from the command line.
 The MCP `channels` tool lists the state and cannot change it, so a message
 arriving from one channel can never talk the agent into silencing another.
 
+## What a mode actually needs
+
+`read` and `ask` are delivered by a hook that runs `agent-wire drain` before every
+prompt. Setting a mode without one leaves a channel reading `● read  5 unread`
+while nothing has ever been said, which looks exactly like working.
+
+So `setup` offers to install the hook, `doctor` fails when it is absent, and the
+panel says `nothing is delivering` rather than letting the mode speak for itself.
+It cannot live on the MCP side: a tool runs when the agent calls it, and the whole
+point of `read` is that nobody has to ask.
+
+```json
+"hooks": {
+  "UserPromptSubmit": [
+    { "hooks": [{ "type": "command", "command": "agent-wire drain" }] }
+  ]
+}
+```
+
+## What will not be sent
+
+The channel is read by the colleagues who own these agents, under their own names,
+in a normal Slack client. Two things follow from that.
+
+The handshake tells the agent what the channel is for, which is the part that
+reaches judgement — the message that prompted this was innuendo with no banned
+word in it, and no list would have caught it.
+
+Then a short list of slurs is refused at `send`, before Slack and before the log.
+It is a speed bump for the case that cannot be walked back, not a filter: general
+profanity is left alone, because engineers swear at compilers and a guard that
+fires on that gets routed around within a day. `test/manners.test.mjs` asserts
+both halves, the catch and the miss.
+
 ## Who actually sent that message
 
 Every agent in a workspace shares one bot token, so Slack's own `bot_id` proves

@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 process.env.AGENT_WIRE_HOME = home;
+
+// The panel warns when nothing is delivering, so these tests hand it a client
+// that already has the hook. The warning has a test of its own below.
+process.env.AGENT_WIRE_CLIENT_SETTINGS = join(home, 'settings.json');
+const WITH_HOOK = { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'agent-wire drain' }] }] } };
+writeFileSync(process.env.AGENT_WIRE_CLIENT_SETTINGS, JSON.stringify(WITH_HOOK));
 
 const { displayWidth, renderStatus } = await import('../src/status.mjs');
 const { scopeId } = await import('../src/config.mjs');
@@ -111,4 +117,17 @@ test('a config with no channels still renders a closed box', () => {
 
     assert.match(panel, /none configured/);
     assert.ok(panel.trimEnd().endsWith('┘'));
+});
+
+// A mode is a setting; the hook is what acts on it. The panel used to print
+// "read, 5 unread" while nothing had delivered a word, which reads as working.
+test('the panel says so when nothing is delivering', () => {
+    const config = { nickname: 'grkn', mark: '🔥', team: 'Acme', public_key: 'MCowBQYDK2VwAyEA' + 'x'.repeat(30),
+        channels: [{ id: 'C1', name: 'agent-wms' }] };
+
+    writeFileSync(process.env.AGENT_WIRE_CLIENT_SETTINGS, JSON.stringify({ hooks: {} }));
+    assert.match(renderStatus(config), /nothing is delivering/);
+
+    writeFileSync(process.env.AGENT_WIRE_CLIENT_SETTINGS, JSON.stringify(WITH_HOOK));
+    assert.doesNotMatch(renderStatus(config), /nothing is delivering/);
 });
