@@ -72,7 +72,11 @@ export function formatMessage({ mark, from, to, text, ref, channel }) {
     const left = `${mark ? `${mark} ` : ''}${from} => ${to}`;
     if (!ref) return `${left}\n${toSlackText(text)}\n`;
 
-    const handle = `${channel ?? ''}@${ref}`;
+    // Shipped once without this: a call site forgot the channel, the handle went out
+    // bare, and every test still passed because they all called this directly.
+    if (!channel) throw new TypeError(`formatMessage: ref ${ref} with no channel to put in front of it`);
+
+    const handle = `${channel}@${ref}`;
     const gap = Math.max(1, HEADER_WIDTH - displayWidth(left) - handle.length);
     return `${left}${' '.repeat(gap)}${handle}\n${toSlackText(text)}\n`;
 }

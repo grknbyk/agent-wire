@@ -10,7 +10,7 @@ import { test } from 'node:test';
 const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 process.env.AGENT_WIRE_HOME = home;
 
-const { appendMessages, archive, findByTs, markRead, readCursor, readInbox, selectMessages, writeCursor } =
+const { appendMessages, archive, findByRef, findByTs, markRead, readCursor, readInbox, selectMessages, writeCursor } =
     await import('../src/inbox.mjs');
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
@@ -114,4 +114,23 @@ test('read state stays bounded as sessions pile up, and this session survives', 
     const keys = Object.keys(written);
     assert.ok(keys.length <= 8000, `expected at most 8000 keys, got ${keys.length}`);
     assert.equal(written[`${scopeId()}|mine:1788999999.1`], 'read');
+});
+
+test('a handle finds its own message, not the same six characters elsewhere', () => {
+    appendMessages([
+        { ...message('4101.1'), channel: 'dev', ref: 'k7m2pq', text: 'the dev one' },
+        { ...message('4102.1'), channel: 'wms-agents', ref: 'k7m2pq', text: 'the wms one' },
+    ]);
+
+    assert.equal(findByRef('wms-agents@k7m2pq').text, 'the wms one');
+    assert.equal(findByRef('dev@k7m2pq').text, 'the dev one');
+    assert.equal(findByRef('WMS-Agents@K7M2PQ').text, 'the wms one', 'a handle is case-insensitive');
+    assert.equal(findByRef('wms-agents@nothere'), null);
+});
+
+test('a bare handle still resolves, so messages sent by 0.12 stay reachable', () => {
+    appendMessages([{ ...message('4103.1'), channel: 'dev', ref: 'zpbxdf', text: 'older format' }]);
+
+    assert.equal(findByRef('zpbxdf').text, 'older format');
+    assert.equal(findByRef('@zpbxdf').text, 'older format');
 });

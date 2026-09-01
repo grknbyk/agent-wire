@@ -185,3 +185,10 @@ test('handles are drawn from an alphabet with no lookalike characters', () => {
     for (const ref of minted) assert.match(ref, /^[a-hj-km-np-z2-9]{6}$/, ref);
     assert.ok(new Set(minted).size > 190, 'handles repeat far too often');
 });
+
+test('a handle without its channel is a caller bug, not a shorter handle', () => {
+    assert.throws(
+        () => formatMessage({ mark: '🔥', from: 'grkn', to: 'all', text: 'body', ref: 'k7m2pq' }),
+        /no channel/,
+    );
+});

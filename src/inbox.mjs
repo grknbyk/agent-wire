@@ -160,9 +160,13 @@ export const findByTs = (ts) => readInbox().find((item) => item.ts === ts) ?? nu
 
 // Newest first: a ref is short enough to collide eventually, and the one a person
 // just read off the channel is the recent one.
-export const findByRef = (ref) => readInbox()
-    .filter((item) => item.ref === String(ref).replace(/^@/, '').toLowerCase())
-    .at(-1) ?? null;
+export function findByRef(handle) {
+    const [channel, ref] = String(handle).toLowerCase().split('@');
+    const wanted = ref ?? channel;
+    return readInbox()
+        .filter((item) => item.ref === wanted && (!ref || !channel || item.channel === channel))
+        .at(-1) ?? null;
+}
 
 export const readCursor = (channelId) => readJsonCached(paths.cursors, {})[channelId] ?? null;
 

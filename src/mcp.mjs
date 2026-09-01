@@ -262,7 +262,7 @@ async function sendText(config, { to, text, channel, replyTo }) {
 
     const client = slackClient(config.bot_token);
     const ref = mintRef();
-    const rendered = formatMessage({ mark: config.mark, from: config.nickname, to, text, ref });
+    const rendered = formatMessage({ mark: config.mark, from: config.nickname, to, text, ref, channel: target.name });
     const signature = signMessage(config.private_key, {
         channel: target.id, from: config.nickname, to, conv: chain.conv, hop: chain.hop, text,
     });
@@ -279,7 +279,7 @@ async function sendText(config, { to, text, channel, replyTo }) {
     if (!posted.ok) return `Slack rejected it (${posted.reason})`;
 
     recordOwnMessage(config, { ts: posted.ts, target, to, text, chain, ref });
-    return `delivered to ${to} in #${target.name} as @${ref}`;
+    return `delivered to ${to} in #${target.name} as ${target.name}@${ref}`;
 }
 
 // Our own sent messages go into the local log too, so the log is a complete
@@ -319,7 +319,7 @@ async function postFile(config, { to, path, note, target, chain, logText }) {
     });
     const posted = await postMessage(client, {
         channel: target.id,
-        rendered: formatMessage({ mark: config.mark, from: config.nickname, to, text, ref }),
+        rendered: formatMessage({ mark: config.mark, from: config.nickname, to, text, ref, channel: target.name }),
         signature,
         publicKey: config.public_key,
         from: config.nickname,
@@ -351,7 +351,7 @@ async function sendLongText(config, { to, text, target, chain }) {
     unlinkSync(path);
     if (!result.ok) return result.message;
 
-    return `delivered to ${to} in #${result.channelName} as @${result.ref} — ${text.length} characters, sent as a file`;
+    return `delivered to ${to} in #${result.channelName} as ${result.channelName}@${result.ref} — ${text.length} characters, sent as a file`;
 }
 
 async function call(name, args, session) {
@@ -454,7 +454,7 @@ async function call(name, args, session) {
         });
         if (!result.ok) return result.message;
 
-        return `sent ${result.name} to ${args.to} in #${result.channelName} as @${result.ref}`;
+        return `sent ${result.name} to ${args.to} in #${result.channelName} as ${result.channelName}@${result.ref}`;
     }
 
     if (name === 'archive') return `archived ${archive(args.ts)} message(s)`;
