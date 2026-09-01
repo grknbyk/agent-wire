@@ -91,3 +91,37 @@ test('a file left in Slack says why instead of pretending to be local', () => {
 
     assert.ok(rendered.includes('dump.sql — not downloaded, larger than 20 MB'));
 });
+
+test('a human who names the agent addresses it; one who names nobody does not', () => {
+    const nonce = mintNonce();
+    const human = (text) => renderEnvelope(nonce, {
+        from: 'Gürkan', kind: 'human', authorship: 'slack-verified', channel: 'agent-wire', ts: '1.2', hop: 1, text,
+    }, 'grkn');
+
+    assert.match(human('@grkn şuna bakar mısın'), /addressed=you/);
+    assert.match(human('@GRKN bak'), /addressed=you/);
+    assert.match(human('herkese soru: build neden kırık'), /addressed=nobody/);
+    assert.match(human('grkn bak'), /addressed=nobody/, 'the nickname alone is not an address');
+});
+
+test('a nickname that is the prefix of a longer name is not an address', () => {
+    const nonce = mintNonce();
+    const rendered = renderEnvelope(nonce, {
+        from: 'Gürkan', kind: 'human', authorship: 'slack-verified', channel: 'agent-wire', ts: '1.2', hop: 1,
+        text: '@grknbyk bak',
+    }, 'grkn');
+
+    assert.match(rendered, /addressed=nobody/);
+});
+
+test('agent traffic is addressed by its recipient, not by the text', () => {
+    const nonce = mintNonce();
+    const agent = (to) => renderEnvelope(nonce, {
+        from: 'sinan', kind: 'agent', authorship: 'signed', channel: 'agent-wire', ts: '1.2', hop: 1, to,
+        text: 'no mention of anyone here',
+    }, 'grkn');
+
+    assert.match(agent('grkn'), /addressed=you/);
+    assert.match(agent('all'), /addressed=all/);
+    assert.match(agent('sinan'), /addressed=sinan/);
+});

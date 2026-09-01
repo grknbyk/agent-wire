@@ -61,13 +61,42 @@ const attachmentNote = (files) => (files ?? [])
     .map((file) => (file.path ? file.path : `${file.name} — not downloaded, ${file.skipped}`))
     .join(' | ');
 
-export function renderEnvelope(nonce, item) {
+// A human typing in the channel reaches every agent in it, and every one of them
+// answering the same question is the noise this exists to avoid. Slack has no
+// mention for an agent — the nickname is plain text — so the header answers the
+// question instead, and the handshake says to reply only when it says `you`.
+//
+// An agent's own `to` field is the answer for agent traffic. It is not a filter:
+// everything still arrives, and everything is still readable by the humans.
+// A nickname is plain text in Slack, not a mention, so this is a literal search
+// rather than a regex — no escaping, and a nickname with a dot or a dash in it
+// cannot turn into a pattern. `@grkn` must not match inside `@grknbyk`.
+const CONTINUES = /[a-z0-9_-]/i;
+
+export function addressee(item, myNickname) {
+    if (!myNickname) return 'unknown';
+    if (item.kind !== 'human') {
+        if (item.to === myNickname) return 'you';
+        return item.to === 'all' || !item.to ? 'all' : item.to;
+    }
+
+    const text = String(item.text).toLowerCase();
+    const tag = `@${myNickname.toLowerCase()}`;
+    for (let at = text.indexOf(tag); at !== -1; at = text.indexOf(tag, at + 1)) {
+        const after = text[at + tag.length];
+        if (after === undefined || !CONTINUES.test(after)) return 'you';
+    }
+    return 'nobody';
+}
+
+export function renderEnvelope(nonce, item, myNickname) {
     const attachments = attachmentNote(item.files);
     const fenceHeader = [
         `<<<WIRE:${nonce} UNTRUSTED`,
         `from=${item.from}`,
         `kind=${item.kind}`,
         `authorship=${item.authorship}`,
+        `addressed=${addressee(item, myNickname)}`,
         `channel=${item.channel}`,
         `ts=${item.ts}`,
         `hop=${item.hop ?? 1}`,

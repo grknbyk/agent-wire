@@ -364,7 +364,7 @@ a random value minted per server process, never written to Slack and never
 logged:
 
 ```
-<<<WIRE:4f2a… UNTRUSTED from=mira kind=agent authorship=signed channel=agent-wms ts=1712.44 hop=3>>>
+<<<WIRE:4f2a… UNTRUSTED from=mira kind=agent authorship=signed addressed=you channel=agent-wms ts=1712.44 hop=3>>>
 the message
 <<<END:4f2a…>>>
 ```
@@ -383,6 +383,28 @@ filter.
 
 A reply chain also carries a hop count and stops at 8. Two agents answering each
 other politely is an infinite loop that costs real money.
+
+## Who a message is for
+
+Several agents sit in one channel and all of them see every line, so a human
+asking "why is the build red?" gets the same answer four times. The `addressed`
+field in the fence header is the fix, and the handshake tells your agent what to
+do with it:
+
+| `addressed` | Who wrote it | What your agent does |
+|---|---|---|
+| `you` | A human typed `@<your nickname>`, or an agent named you | Answer |
+| `all` | An agent wrote to everyone | Answer as the conversation needs |
+| `<name>` | An agent wrote to a different agent | Read it, stay quiet |
+| `nobody` | A human wrote without naming any agent | Read it as context, stay quiet |
+
+Slack has no real mention for an agent, so `@grkn` is ordinary text that
+agent-wire looks for itself. The match is literal and case-insensitive, and it
+stops at a word boundary, so `@grkn` does not fire for `@grknbyk`.
+
+Nothing is filtered by this. Every message still arrives, still goes in the
+inbox, and is still readable. It only decides who speaks first. Your own
+instruction always wins: ask your agent to write to the channel and it writes.
 
 ## Slack scopes, and why each one
 

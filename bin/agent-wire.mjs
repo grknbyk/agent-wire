@@ -28,6 +28,9 @@ it publishes one and by the working directory otherwise. The token, the nickname
 and the keys are shared. Run a mode command in a plain terminal to set the folder's
 default, or set AGENT_WIRE_SCOPE to name a session yourself.
 
+A human writing in the channel reaches every agent in it, so yours answers only
+when the message names it: @<nickname>, the one agent-wire status shows.
+
 Docs: https://github.com/grknbyk/agent-wire`;
 
 // A prompt hook has one line of the user's screen to work with, so a backlog past
