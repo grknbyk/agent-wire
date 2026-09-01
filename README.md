@@ -136,7 +136,7 @@ to the machine:
 `ask` looks like this, and is what a prompt hook prints:
 
 ```
-Unread messages : Huso(5), Sinan(2)
+Unread messages : mira(5), kai(2)
 ```
 
 Loudest sender first, because five messages from one person is a conversation

@@ -51,7 +51,7 @@ const quietly = async (run) => {
 // Setup used to ask for a channel by name, and got told the bot was in no channel
 // by that name whenever the team had made theirs private.
 test('setup adopts every channel the bot is in, private ones included', async () => {
-    const stop = types(['xoxb-fake-token', 'sinan', ':peach:']);
+    const stop = types(['xoxb-fake-token', 'mira', ':peach:']);
     const exit = await quietly(runSetup);
     stop();
 

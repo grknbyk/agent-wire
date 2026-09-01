@@ -9,7 +9,7 @@ import { renderEnvelope } from './protocol.mjs';
 // has to scroll is a hook line the user stops reading.
 const SENDERS_SHOWN = 5;
 
-// "Huso(5), Sinan(2)", loudest first, so the name that matters is the first thing
+// "mira(5), kai(2)", loudest first, so the name that matters is the first thing
 // on the line. The count per person is the whole point: five messages from one
 // person is a conversation waiting, one each from five people is a standup.
 export function senderTally(items) {

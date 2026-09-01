@@ -90,6 +90,7 @@ export function selectMessages({ state = 'unread', count = DEFAULT_COUNT, channe
 // A session still running has recent timestamps and survives; only the dead ones
 // are cheap enough to lose. The current scope is never a candidate.
 const STATE_KEYS_MAX = 8000;
+const STATE_KEYS_KEEP = 6000;
 
 const scopeOfKey = (key) => {
     const bar = key.indexOf('|');
@@ -99,6 +100,15 @@ const scopeOfKey = (key) => {
 function prunedStates(states) {
     const keys = Object.keys(states);
     if (keys.length <= STATE_KEYS_MAX) return states;
+
+    // One session that has simply read a lot owns every key here, and none of them
+    // can be dropped. Counting them costs a startsWith per key and no allocation,
+    // where grouping by scope costs a substring per key: 20k keys went from 0.7 ms
+    // to 13 ms of scanning that always freed nothing.
+    const mine = `${scopeId()}|`;
+    let foreign = 0;
+    for (const key of keys) if (!key.startsWith(mine)) foreign++;
+    if (foreign === 0) return states;
 
     const keysByScope = new Map();
     const newestByScope = new Map();
@@ -114,14 +124,15 @@ function prunedStates(states) {
         .filter(([scope]) => scope !== scopeId())
         .sort(([, left], [, right]) => left - right);
 
-    const kept = { ...states };
+    // Down to the low mark rather than to the cap, or the next write is over it
+    // again and pays for the whole scan a second time.
     let remaining = keys.length;
     for (const [scope] of stale) {
-        if (remaining <= STATE_KEYS_MAX) break;
-        for (const key of keysByScope.get(scope)) delete kept[key];
+        if (remaining <= STATE_KEYS_KEEP) break;
+        for (const key of keysByScope.get(scope)) delete states[key];
         remaining -= keysByScope.get(scope).length;
     }
-    return kept;
+    return states;
 }
 
 export function markRead(items) {
