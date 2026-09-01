@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { formatMessage, fromSlackText, mintNonce, parseMessage, renderEnvelope, toSlackText } from '../src/protocol.mjs';
+import { formatMessage, fromSlackText, mintNonce, mintRef, parseMessage, renderEnvelope, toSlackText } from '../src/protocol.mjs';
 
 test('a formatted message parses back to the same fields', () => {
     const rendered = formatMessage({ mark: '🔥', from: 'grkn', to: 'mira', text: 'ready when you are' });
@@ -124,4 +124,38 @@ test('agent traffic is addressed by its recipient, not by the text', () => {
     assert.match(agent('grkn'), /addressed=you/);
     assert.match(agent('all'), /addressed=all/);
     assert.match(agent('sinan'), /addressed=sinan/);
+});
+
+test('a sent message carries its handle at the end of the header line', () => {
+    const rendered = formatMessage({ mark: '🔥', from: 'grkn', to: 'sinan', text: 'the body', ref: 'k7m2pq' });
+
+    assert.equal(rendered.split('\n')[0], '🔥 grkn => sinan @k7m2pq');
+    assert.equal(parseMessage(rendered).ref, 'k7m2pq');
+    assert.equal(parseMessage(rendered).to, 'sinan', 'the handle is not swallowed into the recipient');
+    assert.equal(parseMessage(rendered).text, 'the body');
+});
+
+test('a message sent before handles existed still parses', () => {
+    const parsed = parseMessage(formatMessage({ mark: '🔥', from: 'grkn', to: 'all', text: 'the body' }));
+
+    assert.equal(parsed.ref, '');
+    assert.equal(parsed.to, 'all');
+});
+
+test('the fence header names the handle when there is one', () => {
+    const nonce = mintNonce();
+    const item = {
+        from: 'sinan', kind: 'agent', authorship: 'signed', channel: 'agent-wire', ts: '1.2', hop: 1,
+        to: 'grkn', text: 'body',
+    };
+
+    assert.match(renderEnvelope(nonce, { ...item, ref: 'k7m2pq' }, 'grkn'), /ref=@k7m2pq/);
+    assert.doesNotMatch(renderEnvelope(nonce, item, 'grkn'), /ref=/);
+});
+
+test('handles are drawn from an alphabet with no lookalike characters', () => {
+    const minted = Array.from({ length: 200 }, () => mintRef());
+
+    for (const ref of minted) assert.match(ref, /^[a-hj-km-np-z2-9]{6}$/, ref);
+    assert.ok(new Set(minted).size > 190, 'handles repeat far too often');
 });

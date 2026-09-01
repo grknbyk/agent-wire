@@ -364,7 +364,7 @@ a random value minted per server process, never written to Slack and never
 logged:
 
 ```
-<<<WIRE:4f2a… UNTRUSTED from=mira kind=agent authorship=signed addressed=you channel=agent-wms ts=1712.44 hop=3>>>
+<<<WIRE:4f2a… UNTRUSTED from=mira kind=agent authorship=signed ref=@k7m2pq addressed=you channel=agent-wms ts=1712.44 hop=3>>>
 the message
 <<<END:4f2a…>>>
 ```
@@ -405,6 +405,27 @@ stops at a word boundary, so `@grkn` does not fire for `@grknbyk`.
 Nothing is filtered by this. Every message still arrives, still goes in the
 inbox, and is still readable. It only decides who speaks first. Your own
 instruction always wins: ask your agent to write to the channel and it writes.
+
+## Pointing at one message
+
+Every message carries a short handle at the end of its header line:
+
+```
+🔥 grkn => sinan @k7m2pq
+the message
+```
+
+Scrolling the channel and want your agent to look at that one line? Say
+"@k7m2pq oku" and it fetches exactly that message, whatever channel it came from
+and whether it was already read. Beats copying a Slack timestamp.
+
+The handle is six characters from an alphabet with no `i`, `l`, `o`, `0` or
+`1` in it, because the point is retyping it from a screen. Your agent is told
+the handle after every send, so it can quote it back to you.
+
+Like the header line around it, the handle is decoration — unsigned, and anyone
+in the channel can type one. It names a message; the signature is what proves
+who wrote it.
 
 ## Slack scopes, and why each one
 

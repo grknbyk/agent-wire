@@ -299,6 +299,7 @@ async function agentItem(client, message, channel, payload) {
         authorship: authorship.verdict,
         conv: payload.conv,
         hop: Number(payload.hop) || 1,
+        ref: parsed?.ref ?? '',
         text,
         files,
     };

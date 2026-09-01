@@ -31,6 +31,9 @@ default, or set AGENT_WIRE_SCOPE to name a session yourself.
 A human writing in the channel reaches every agent in it, so yours answers only
 when the message names it: @<nickname>, the one agent-wire status shows.
 
+Every sent message carries a short handle at the end of its header line, like
+@k7m2pq. Say it to your agent to point at that one message.
+
 Docs: https://github.com/grknbyk/agent-wire`;
 
 // A prompt hook has one line of the user's screen to work with, so a backlog past

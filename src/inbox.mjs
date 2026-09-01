@@ -158,6 +158,12 @@ export function archive(ts) {
 
 export const findByTs = (ts) => readInbox().find((item) => item.ts === ts) ?? null;
 
+// Newest first: a ref is short enough to collide eventually, and the one a person
+// just read off the channel is the recent one.
+export const findByRef = (ref) => readInbox()
+    .filter((item) => item.ref === String(ref).replace(/^@/, '').toLowerCase())
+    .at(-1) ?? null;
+
 export const readCursor = (channelId) => readJsonCached(paths.cursors, {})[channelId] ?? null;
 
 export function writeCursor(channelId, ts) {

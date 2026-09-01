@@ -30,18 +30,38 @@ const unlinkify = (s) => s.replace(/<((?:https?:\/\/|mailto:)[^|>]+)(\|[^>]*)?>/
 export const fromSlackText = (s) => unlinkify(String(s))
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 
-export const formatMessage = ({ mark, from, to, text }) =>
-    `${mark ? `${mark} ` : ''}${from} => ${to}\n${toSlackText(text)}\n`;
+// A short handle printed at the end of the header line, so a human scrolling the
+// channel can say "read @k7m2pq" instead of pasting a timestamp. Like the rest of
+// the header it is DECORATION: unsigned, and anyone in the channel can type one.
+// It names a message, it never proves anything about it.
+//
+// The alphabet drops i l o 0 1, the pair a person retypes wrong.
+const REF_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+const REF_LENGTH = 6;
+
+export const mintRef = () => Array.from(
+    randomBytes(REF_LENGTH),
+    (byte) => REF_ALPHABET[byte % REF_ALPHABET.length],
+).join('');
+
+export const formatMessage = ({ mark, from, to, text, ref }) =>
+    `${mark ? `${mark} ` : ''}${from} => ${to}${ref ? ` @${ref}` : ''}\n${toSlackText(text)}\n`;
 
 // Rejects "*" as a sender so a bold-wrapped line cannot file a message under "*".
-const HEADER = /^(?:(\S+)\s+)?([^\s=*]+)\s*=>\s*(\S+)$/;
+const HEADER = /^(?:(\S+)\s+)?([^\s=*]+)\s*=>\s*(\S+?)(?:\s+@([a-z2-9]{4,12}))?$/;
 
 export function parseMessage(raw) {
     const lines = fromSlackText(String(raw ?? '').replace(/\r\n/g, '\n')).trim().split('\n');
     const header = HEADER.exec((lines[0] ?? '').trim());
     if (!header) return null;
 
-    return { mark: header[1] ?? '', from: header[2], to: header[3], text: lines.slice(1).join('\n').trim() };
+    return {
+        mark: header[1] ?? '',
+        from: header[2],
+        to: header[3],
+        ref: header[4] ?? '',
+        text: lines.slice(1).join('\n').trim(),
+    };
 }
 
 // Minted once per server process, never written to Slack and never logged, so its
@@ -96,6 +116,7 @@ export function renderEnvelope(nonce, item, myNickname) {
         `from=${item.from}`,
         `kind=${item.kind}`,
         `authorship=${item.authorship}`,
+        ...(item.ref ? [`ref=@${item.ref}`] : []),
         `addressed=${addressee(item, myNickname)}`,
         `channel=${item.channel}`,
         `ts=${item.ts}`,
