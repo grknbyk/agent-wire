@@ -35,7 +35,7 @@ agent-wire setup
 ```
 
 Run `setup` in a real terminal window. It asks questions, so it refuses a pipe, a
-script, and an editor task — an agent that tries to run it from a tool gets a
+script, and an editor task. An agent that tries to run it from a tool gets a
 one-line refusal and usually tells you the wrong thing about why.
 
 On macOS the first line often fails with `EACCES` on `/usr/local/lib/node_modules`,
@@ -56,7 +56,7 @@ the Bot User OAuth Token back. Then you create the channel in Slack and type
 
 **Give every install its own nickname.** The first key seen under a name is pinned
 to it, so a second install answering to the same name is reported as `impostor` by
-everyone who already heard from the first — and a forged sighting stays on the
+everyone who already heard from the first, and a forged sighting stays on the
 record even after a later message verifies.
 
 The whole team shares one Slack app and one bot token. Only the first person
@@ -138,7 +138,7 @@ again.
 
 `status` returns the same card the CLI draws, already fenced. It exists because a
 shell result gets read, understood and then retyped as prose, and a drawn box does
-not survive that — two installs reporting the same state should not produce two
+not survive that. Two installs reporting the same state should not produce two
 different-looking answers.
 
 The mode of a channel is a command the user runs, never a tool. A message
@@ -169,7 +169,7 @@ file was left there.
 
 Every channel the bot is in is a channel it works in. Slack owns that list, so
 `setup` and `doctor` read it rather than asking, and a channel renamed in Slack
-keeps working — the config stores the id and refreshes the name.
+keeps working: the config stores the id and refreshes the name.
 
 Every message is tagged with the channel it came from, `send` takes an optional
 `channel`, and `inbox` can filter by one. The first entry is the default.
@@ -198,7 +198,7 @@ Unread messages : mira(5), kai(2)
 Loudest sender first, because five messages from one person is a conversation
 waiting while one each from five people is a standup. Past five names the rest
 become `+3 more`. Anything that failed its signature check is called out on the
-same line — `[1 FORGED]` — rather than counted in silently.
+same line as `[1 FORGED]`, rather than counted in silently.
 
 `read` is the one to think about before turning on: it puts other people's
 writing into your agent's prompt without you asking. It arrives inside the same
@@ -210,8 +210,8 @@ content share a page.
 ### What "per session" means
 
 A session is identified by the client's own session id when the client publishes
-one. Claude Code puts `CLAUDE_CODE_SESSION_ID` into everything it spawns — the MCP
-server, the prompt hook and the shell alike — so two windows open on one project
+one. Claude Code puts `CLAUDE_CODE_SESSION_ID` into everything it spawns (the MCP
+server, the prompt hook and the shell alike), so two windows open on one project
 hold different modes. The nickname, the keys and the Slack app stay shared.
 
 A plain terminal has no session id, so a mode command there lands on the working
@@ -237,7 +237,7 @@ everything it is handed, and if that also marked the message read next door, an
 
 The poller is not per session. One poller feeds one shared log for the whole
 machine, so a channel stays polled while any session still wants it. `off` means
-"do not tell me", not "stop collecting" — otherwise the quietest session on the
+"do not tell me", not "stop collecting". Otherwise the quietest session on the
 machine would decide what the busiest one is allowed to see.
 
 ## Working on two of five channels
@@ -281,7 +281,7 @@ With one channel configured the name is the whole argument, so it is dropped:
 
 The MCP server offers the same three as prompts, which a client shows in its
 slash-command list: `/mcp__agent-wire__read` in Claude Code. Nothing needs to be
-copied into `~/.claude/commands/` — the package carries them. A prompt is offered
+copied into `~/.claude/commands/`, because the package carries them. A prompt is offered
 to the user and invoked by nobody else, so this is the same boundary as the shell
 command, minus the typing.
 
@@ -324,7 +324,7 @@ The channel is read by the colleagues who own these agents, under their own name
 in a normal Slack client. Two things follow from that.
 
 The handshake tells the agent what the channel is for, which is the part that
-reaches judgement — the message that prompted this was innuendo with no banned
+reaches judgement. The message that prompted this was innuendo with no banned
 word in it, and no list would have caught it.
 
 Then a short list of slurs is refused at `send`, before Slack and before the log.
@@ -375,9 +375,8 @@ governs. If a payload contains the live delimiter, it is replaced with
 `[FENCE-ECHO REDACTED]`, which turns reflection into a visible event instead of a
 silently broken boundary.
 
-Be clear about what this buys you. An attacker cannot close the fence, and does
-not need to, because text inside a correctly labelled `UNTRUSTED` block still
-reads as language to a model. The fence makes the labelling accurate. Hostile
+An attacker cannot close the fence, and does not need to, because text inside a
+correctly labelled `UNTRUSTED` block still reads as language to a model. The fence makes the labelling accurate. Hostile
 text stays exactly as persuasive as it was, so this is a boundary rather than a
 filter.
 
@@ -417,9 +416,9 @@ column 60 so a scrolled channel has one straight edge to read down:
 🛰️ mehmet-emin-kaya => hakan-akduman       wms-agents@8g88zm
 ```
 
-Scrolling the channel and want your agent to look at that one line? Say
-"wms-agents@k7m2pq oku" and it fetches exactly that message, whatever channel it
-came from and whether it was already read. Beats copying a Slack timestamp.
+To point your agent at one line you scrolled past, say "wms-agents@k7m2pq oku".
+It fetches that message whatever channel it came from and whether it was already
+read, which saves copying a Slack timestamp.
 
 The six characters come from an alphabet with no `i`, `l`, `o`, `0` or `1`
 in it, because the point is retyping it from a screen. The channel name in front
@@ -427,11 +426,11 @@ keeps two channels from ever meaning the same handle. Your agent is told the
 handle after every send, so it can quote it back to you.
 
 Slack's font is proportional, so the right edge is close rather than exact. A
-nickname long enough to reach the column pushes past it instead of being cut —
-losing the edge on one line costs less than losing a character of somebody's
+nickname long enough to reach the column pushes past it instead of being cut.
+Losing the edge on one line costs less than losing a character of somebody's
 name.
 
-Like the header line around it, the handle is decoration — unsigned, and anyone
+Like the header line around it, the handle is decoration: unsigned, and anyone
 in the channel can type one. It names a message; the signature is what proves
 who wrote it.
 
@@ -481,13 +480,13 @@ reinstalled app cannot produce duplicates.
 - Discord as a second transport
 - Published measurements of fenced against unfenced injection compliance
 
-Wire format v2 signs the attached file id alongside the text, so a 0.5 agent and
-a 0.4 agent cannot verify each other. Upgrade both ends together.
+Wire format v2 signs the attached file id alongside the text, so two agents on
+different wire formats cannot verify each other. Upgrade both ends together.
 
 ## Development
 
 ```bash
-npm test       # 60 tests, no network
+npm test       # 86 tests, no network
 npm run bench  # medians over a synthetic 20k-message log
 ```
 
