@@ -84,11 +84,26 @@ Or, for any other MCP client:
 }
 ```
 
-Without the global install, substitute `npx -y @grknbyk/agent-wire` for
-`agent-wire` everywhere above. It costs a registry round trip on every start.
+### Without installing it
 
-An install that reports an old version after `npm i -g` is reading a stale local
-cache rather than a failed publish: `npm cache clean --force`, then install again.
+Every command works through `npx` instead, which is the way to try it before
+putting a binary on the machine:
+
+```bash
+npx @grknbyk/agent-wire setup
+claude mcp add -s user agent-wire -- npx -y @grknbyk/agent-wire serve
+```
+
+Nothing behaves differently. It is slower: measured at 800 ms against 215 ms for
+the global binary, on a warm cache, and the difference is paid on every call. The
+prompt hook runs on every prompt, so that is where it is felt.
+
+`npx` also serves whatever it has cached. Add `@latest` when a version you just
+published does not show up.
+
+An install that reports an old version after `npm i -g` is reading the same stale
+cache rather than a publish that failed: `npm cache clean --force`, then install
+again.
 
 ## Commands
 
