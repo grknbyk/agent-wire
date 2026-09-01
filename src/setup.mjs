@@ -170,15 +170,22 @@ export async function runSetup() {
             } else {
                 const written = installHook();
                 console.log(written.ok
-                    ? `Added.${written.backedUp ? ' The previous file is kept as settings.json.agent-wire.bak.' : ''} Restart the client to pick it up.`
+                    // The hook is read per prompt, not at startup, so it works on
+                    // the next one. Telling people to restart was advice for a
+                    // problem they do not have.
+                    ? `Added.${written.backedUp ? ' The previous file is kept as settings.json.agent-wire.bak.' : ''} It takes effect on the next prompt.`
                     : `Not added: ${written.reason}`);
             }
         }
 
         console.log(`\nDone. You are ${config.mark} ${config.nickname} in ${channelList(adopted.channels)}.`);
         console.log(`Config: ${paths.config}`);
-        console.log('\nAdd this to your MCP client (Claude Code: `claude mcp add agent-wire -- npx -y @grknbyk/agent-wire serve`):');
-        console.log(JSON.stringify({ mcpServers: { 'agent-wire': { command: 'npx', args: ['-y', '@grknbyk/agent-wire', 'serve'] } } }, null, 2));
+        // The same line the README gives. They disagreed, and the one printed at
+        // the end of a successful install is the one people actually paste.
+        console.log('\nRegister it with your MCP client. Claude Code:');
+        console.log('  claude mcp add -s user agent-wire -- agent-wire serve');
+        console.log('\nAny other client:');
+        console.log(JSON.stringify({ mcpServers: { 'agent-wire': { command: 'agent-wire', args: ['serve'] } } }, null, 2));
         console.log(`\nUpload assets/agent-wire.png as the app icon at https://api.slack.com/apps (Basic Information → Display Information).`);
         return 0;
     } catch (error) {
