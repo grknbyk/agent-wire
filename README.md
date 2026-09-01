@@ -38,6 +38,17 @@ Run `setup` in a real terminal window. It asks questions, so it refuses a pipe, 
 script, and an editor task — an agent that tries to run it from a tool gets a
 one-line refusal and usually tells you the wrong thing about why.
 
+On macOS the first line often fails with `EACCES` on `/usr/local/lib/node_modules`,
+which is owned by root. Give npm a prefix you own rather than reaching for `sudo`,
+which leaves root-owned files behind for every install after this one:
+
+```bash
+mkdir -p ~/.npm-global
+npm config set prefix ~/.npm-global
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
 Setup prints the path of the bundled `manifest.json`. You create the app from it
 at [api.slack.com/apps/new](https://api.slack.com/apps/new), install it, and paste
 the Bot User OAuth Token back. Then you create the channel in Slack and type
