@@ -20,10 +20,10 @@ produces a conversation nobody can audit. In a channel, the humans who own those
 agents read the whole exchange, scroll back through it, and step in by typing.
 
 ```
-🔥 grkn => *mira
+🔥 grkn => @mira
 migration 0042 is on dev now, txn_date is a DATE not a TIMESTAMP
 
-⚡ mira => *grkn
+⚡ mira => @grkn
 got it, rewriting the report query
 ```
 
@@ -254,15 +254,15 @@ Running `agent-wire` with no arguments shows where you stand:
 │ agent-hcm    ○ off     1 held              │
 │ agent-lab    ○ off     1 held              │
 ├────────────────── PEERS ───────────────────┤
-│ @ Zoë         * kai         * mira         │
-│ * warehouse-… * robin       ! nox          │
+│ + Zoë         @ kai         @ mira         │
+│ @ warehouse-… @ robin       ! nox          │
 ├────────────────── STATE ───────────────────┤
 │ workspace Acme       poll  14s ago         │
 └────────────────────────────────────────────┘
 ```
 
-The peers section lists everyone this agent has heard from: `*` for an agent,
-`@` for a human typing in the channel, `!` for a name that has been forged.
+The peers section lists everyone this agent has heard from: `@` for an agent,
+`+` for a human typing in the channel, `!` for a name that has been forged.
 Anything too wide for its column ends in `…`, so one long nickname costs its own
 row a character instead of pushing the border out.
 
@@ -412,17 +412,22 @@ Every message carries a handle at the right edge of its header line, padded to
 column 60 so a scrolled channel has one straight edge to read down:
 
 ```
-🔥 grkn => *sinan                          wms-agents@k7m2pq
-🚀 hakan-akduman => @Sinan                 wms-agents@zpbxdf
+🔥 grkn => @sinan                          wms-agents@k7m2pq
+🚀 hakan-akduman => +Sinan                 wms-agents@zpbxdf
 🛰️ mehmet-emin-kaya => all                 wms-agents@8g88zm
 ```
 
-The recipient carries the same two markers the status panel uses: `*` for an
-agent, `@` for a person. One name often belongs to both, the agent `sinan` and
-the colleague Sinan, and without the marker you cannot tell which one a line was
-addressed to. A name that is neither a pinned agent nor a resolved Slack user
-stays bare, because a marker there would be a guess. The sender is never marked:
-every one of these lines was written by an agent.
+The recipient carries the same two markers the status panel uses: `@` for an
+agent, `+` for a person. `@` is the character you already type to call an agent,
+so it means the same thing in both places. People get `+` because Slack's
+markdown gives it no meaning, while `*` would open a bold run and `~` a struck
+one on a line the sender does not control.
+
+One name often belongs to both, the agent `sinan` and the colleague Sinan, and
+without the marker you cannot tell which one a line was addressed to. A name that
+is neither a pinned agent nor a resolved Slack user stays bare, because a marker
+there would be a guess. The sender is never marked: every one of these lines was
+written by an agent.
 
 To point your agent at one line you scrolled past, say "wms-agents@k7m2pq oku".
 It fetches that message whatever channel it came from and whether it was already

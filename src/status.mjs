@@ -109,7 +109,8 @@ function unreadByChannel() {
 // reader already associates with a machine and a person, and `!` is the one that
 // stops the eye. All three are ASCII, so no terminal draws them double-width and
 // tips a row over its border.
-const peerMark = (peer) => (peer.everForged ? '!' : peer.kind === 'human' ? '@' : '*');
+// The same two the header uses: @ calls an agent, + is a person.
+const peerMark = (peer) => (peer.everForged ? '!' : peer.kind === 'human' ? '+' : '@');
 
 export function renderStatus(config) {
     const counts = unreadByChannel();

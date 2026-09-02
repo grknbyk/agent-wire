@@ -68,17 +68,20 @@ export function displayWidth(text) {
 // one line costs less than losing a character of somebody's name.
 export const HEADER_WIDTH = 60;
 
-// The status panel already reads * for an agent and @ for a human, so the header
-// borrows the same two characters rather than inventing a third vocabulary. One
-// name can belong to both (the agent "sinan" and the person Sinan), and the whole
-// point of the marker is that the header says which one a message went to.
+// @ is the character a person types to call an agent, so it means agent here too
+// and one name carries one meaning in both places. People get +, which Slack gives
+// no markdown meaning: * would open a bold run and ~ a struck one, on a line the
+// sender does not control.
+//
+// One name often belongs to both, the agent "sinan" and the colleague Sinan, and
+// saying which one a message went to is the whole point of the marker.
 //
 // Only the recipient is marked. Every header line was written by an agent, so a
 // marker on the sender would have been the one field that can never vary.
 //
 // A name nobody has placed stays bare. Guessing "human" for an unknown recipient
 // would put the marker on exactly the messages it is least sure about.
-const RECIPIENT_MARK = { agent: '*', human: '@' };
+const RECIPIENT_MARK = { agent: '@', human: '+' };
 
 export const addressLine = ({ from, to, toKind }) =>
     `${from} => ${to === 'all' ? 'all' : `${RECIPIENT_MARK[toKind] ?? ''}${to}`}`;
@@ -96,10 +99,10 @@ export function formatMessage({ mark, from, to, toKind, text, ref, channel }) {
     return `${left}${' '.repeat(gap)}${handle}\n${toSlackText(text)}\n`;
 }
 
-// The leading * on a sender is ours; a *bold* line is not, which is why the name
-// after it still cannot contain one. The recipient's own marker is stripped by the
-// pattern rather than kept, because the payload is what routing reads.
-const HEADER = /^(?:(?<mark>\S+)\s+)?\*?(?<from>[^\s=*]+)\s*=>\s*[@*]?(?<to>\S+?)(?:\s+(?<refChannel>[a-z0-9][\w.-]*)?@(?<ref>[a-z2-9]{4,12}))?$/;
+// A sender is never marked now, but 0.13.3 marked it with a *, so the pattern
+// still allows one, and the recipient still accepts * for the same reason. Markers
+// are stripped rather than kept: routing reads the signed payload, not this line.
+const HEADER = /^(?:(?<mark>\S+)\s+)?\*?(?<from>[^\s=*]+)\s*=>\s*[@*+]?(?<to>\S+?)(?:\s+(?<refChannel>[a-z0-9][\w.-]*)?@(?<ref>[a-z2-9]{4,12}))?$/;
 
 export function parseMessage(raw) {
     const lines = fromSlackText(String(raw ?? '').replace(/\r\n/g, '\n')).trim().split('\n');

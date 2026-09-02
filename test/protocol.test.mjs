@@ -198,8 +198,8 @@ test('the header says whether a message went to an agent or to a person', () => 
         mark: '🔥', from: 'grkn', to, toKind, text: 'body', ref: 'k7m2pq', channel: 'wms-agents',
     }).split('\n')[0];
 
-    assert.match(header('sinan', 'agent'), /^🔥 grkn => \*sinan/, 'the agent sinan');
-    assert.match(header('Sinan', 'human'), /^🔥 grkn => @Sinan/, 'the person Sinan');
+    assert.match(header('sinan', 'agent'), /^🔥 grkn => @sinan/, 'the agent sinan');
+    assert.match(header('Sinan', 'human'), /^🔥 grkn => \+Sinan/, 'the person Sinan');
     assert.match(header('all', 'all'), /^🔥 grkn => all/);
     assert.match(header('kai', 'unknown'), /^🔥 grkn => kai/, 'an unplaced name claims nothing');
     assert.doesNotMatch(header('sinan', 'agent'), /\*grkn/, 'the sender needs no marker');

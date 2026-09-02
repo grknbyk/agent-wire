@@ -81,9 +81,9 @@ test('the panel lists who has written, agents and humans alike', async () => {
     const panel = renderStatus({ nickname: 'grkn', mark: '🔥', public_key: 'k', channels: [{ name: 'live' }] });
     const rows = panel.split('\n').filter(Boolean);
 
-    assert.match(panel, /\* mira/);
-    assert.match(panel, /@ Zoë/);
-    assert.doesNotMatch(panel, /\* grkn/, 'our own messages are not correspondents');
+    assert.match(panel, /@ mira/);
+    assert.match(panel, /\+ Zoë/);
+    assert.doesNotMatch(panel, /@ grkn/, 'our own messages are not correspondents');
     assert.equal(new Set(rows.map(displayWidth)).size, 1, 'peer rows broke the alignment');
 });
 
