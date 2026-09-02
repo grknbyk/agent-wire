@@ -229,3 +229,19 @@ test('a person can call an agent with either marker', () => {
     assert.equal(human('grkn buna bakar misin'), 'nobody', 'a bare name is still not a call');
     assert.equal(human('@grknbyk bak'), 'nobody');
 });
+
+test('a mark written as a Slack shortcode is measured as the emoji it draws', () => {
+    const header = (mark) => formatMessage({
+        mark, from: 'grkn', to: 'sinan', toKind: 'agent', text: 'body', ref: 'k7m2pq', channel: 'wms-agents',
+    }).split('\n')[0];
+
+    const shortcode = header(':fire:');
+    const emoji = header('🔥');
+
+    assert.equal(
+        shortcode.length - ':fire:'.length,
+        emoji.length - '🔥'.length,
+        'the two forms padded to different widths',
+    );
+    assert.ok(shortcode.endsWith('wms-agents@k7m2pq'), shortcode);
+});

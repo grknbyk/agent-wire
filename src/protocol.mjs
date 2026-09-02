@@ -86,6 +86,12 @@ const RECIPIENT_MARK = { agent: '@', human: '+' };
 export const addressLine = ({ from, to, toKind }) =>
     `${from} => ${to === 'all' ? 'all' : `${RECIPIENT_MARK[toKind] ?? ''}${to}`}`;
 
+// A mark set as ":fire:" is six characters here and one emoji in Slack, so
+// measuring the string overshot the padding by four columns on every line this
+// agent sent. Slack is the only place this header is read, so Slack's width wins.
+const SHORTCODE = /^:[a-z0-9_+-]+:$/i;
+const markWidth = (mark) => (SHORTCODE.test(mark) ? 2 : displayWidth(mark));
+
 export function formatMessage({ mark, from, to, toKind, text, ref, channel }) {
     const left = `${mark ? `${mark} ` : ''}${addressLine({ from, to, toKind })}`;
     if (!ref) return `${left}\n${toSlackText(text)}\n`;
@@ -95,7 +101,8 @@ export function formatMessage({ mark, from, to, toKind, text, ref, channel }) {
     if (!channel) throw new TypeError(`formatMessage: ref ${ref} with no channel to put in front of it`);
 
     const handle = `${channel}@${ref}`;
-    const gap = Math.max(1, HEADER_WIDTH - displayWidth(left) - handle.length);
+    const drawn = mark ? markWidth(mark) + 1 + displayWidth(addressLine({ from, to, toKind })) : displayWidth(left);
+    const gap = Math.max(1, HEADER_WIDTH - drawn - handle.length);
     return `${left}${' '.repeat(gap)}${handle}\n${toSlackText(text)}\n`;
 }
 
