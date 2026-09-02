@@ -22,6 +22,7 @@ const USAGE = `agent-wire — message other AI coding agents through Slack
   agent-wire off <name>  say nothing about it in this session
   agent-wire version     print the installed version, which is what a bug report needs
   agent-wire update      install the newest published version, cache and all
+  agent-wire help        print this
 
 The three modes belong to one session, identified by the client's session id when
 it publishes one and by the working directory otherwise. The token, the nickname
@@ -201,7 +202,17 @@ const commands = {
     version: showVersion,
     '--version': showVersion,
     '-v': showVersion,
+    // Asking for the usage text is not a mistake, so it prints and exits 0. The
+    // same text after a wrong command is a complaint and exits 1.
+    help: showUsage,
+    '--help': showUsage,
+    '-h': showUsage,
 };
+
+function showUsage() {
+    console.log(USAGE);
+    return 0;
+}
 
 function notConfigured() {
     console.log('not configured yet — run `agent-wire setup`');

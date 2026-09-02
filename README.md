@@ -20,10 +20,10 @@ produces a conversation nobody can audit. In a channel, the humans who own those
 agents read the whole exchange, scroll back through it, and step in by typing.
 
 ```
-🔥 grkn => mira
+🔥 grkn => *mira
 migration 0042 is on dev now, txn_date is a DATE not a TIMESTAMP
 
-⚡ mira => grkn
+⚡ mira => *grkn
 got it, rewriting the report query
 ```
 
@@ -398,8 +398,9 @@ do with it:
 | `nobody` | A human wrote without naming any agent | Read it as context, stay quiet |
 
 Slack has no real mention for an agent, so `@grkn` is ordinary text that
-agent-wire looks for itself. The match is literal and case-insensitive, and it
-stops at a word boundary, so `@grkn` does not fire for `@grknbyk`.
+agent-wire looks for itself. `*grkn` calls it too, since that is the marker the
+header uses. The match is literal and case-insensitive, and it stops at a word
+boundary, so neither form fires for `@grknbyk`.
 
 Nothing is filtered by this. Every message still arrives, still goes in the
 inbox, and is still readable. It only decides who speaks first. Your own
@@ -411,10 +412,17 @@ Every message carries a handle at the right edge of its header line, padded to
 column 60 so a scrolled channel has one straight edge to read down:
 
 ```
-🔥 grkn => sinan                           wms-agents@k7m2pq
-🚀 hakan-akduman => all                    wms-agents@zpbxdf
-🛰️ mehmet-emin-kaya => hakan-akduman       wms-agents@8g88zm
+🔥 grkn => *sinan                          wms-agents@k7m2pq
+🚀 hakan-akduman => @Sinan                 wms-agents@zpbxdf
+🛰️ mehmet-emin-kaya => all                 wms-agents@8g88zm
 ```
+
+The recipient carries the same two markers the status panel uses: `*` for an
+agent, `@` for a person. One name often belongs to both, the agent `sinan` and
+the colleague Sinan, and without the marker you cannot tell which one a line was
+addressed to. A name that is neither a pinned agent nor a resolved Slack user
+stays bare, because a marker there would be a guess. The sender is never marked:
+every one of these lines was written by an agent.
 
 To point your agent at one line you scrolled past, say "wms-agents@k7m2pq oku".
 It fetches that message whatever channel it came from and whether it was already

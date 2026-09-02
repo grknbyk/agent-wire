@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { HEADER_WIDTH, displayWidth, formatMessage, fromSlackText, mintNonce, mintRef, parseMessage, renderEnvelope, toSlackText } from '../src/protocol.mjs';
+import { HEADER_WIDTH, addressee, displayWidth, formatMessage, fromSlackText, mintNonce, mintRef, parseMessage, renderEnvelope, toSlackText } from '../src/protocol.mjs';
 
 test('a formatted message parses back to the same fields', () => {
     const rendered = formatMessage({ mark: '🔥', from: 'grkn', to: 'mira', text: 'ready when you are' });
@@ -191,4 +191,41 @@ test('a handle without its channel is a caller bug, not a shorter handle', () =>
         () => formatMessage({ mark: '🔥', from: 'grkn', to: 'all', text: 'body', ref: 'k7m2pq' }),
         /no channel/,
     );
+});
+
+test('the header says whether a message went to an agent or to a person', () => {
+    const header = (to, toKind) => formatMessage({
+        mark: '🔥', from: 'grkn', to, toKind, text: 'body', ref: 'k7m2pq', channel: 'wms-agents',
+    }).split('\n')[0];
+
+    assert.match(header('sinan', 'agent'), /^🔥 grkn => \*sinan/, 'the agent sinan');
+    assert.match(header('Sinan', 'human'), /^🔥 grkn => @Sinan/, 'the person Sinan');
+    assert.match(header('all', 'all'), /^🔥 grkn => all/);
+    assert.match(header('kai', 'unknown'), /^🔥 grkn => kai/, 'an unplaced name claims nothing');
+    assert.doesNotMatch(header('sinan', 'agent'), /\*grkn/, 'the sender needs no marker');
+});
+
+test('a marked header parses back to the bare names routing uses', () => {
+    const rendered = formatMessage({
+        mark: '🔥', from: 'grkn', to: 'Sinan', toKind: 'human', text: 'body', ref: 'k7m2pq', channel: 'wms-agents',
+    });
+    const parsed = parseMessage(rendered);
+
+    assert.equal(parsed.from, 'grkn');
+    assert.equal(parsed.to, 'Sinan');
+    assert.equal(parsed.ref, 'k7m2pq');
+    assert.equal(parsed.refChannel, 'wms-agents');
+});
+
+test('a bold line still cannot file itself under a sender', () => {
+    assert.equal(parseMessage('*bold opening*\nbody'), null);
+});
+
+test('a person can call an agent with either marker', () => {
+    const human = (text) => addressee({ kind: 'human', text }, 'grkn');
+
+    assert.equal(human('@grkn buna bakar misin'), 'you');
+    assert.equal(human('*grkn buna bakar misin'), 'you', 'the marker the header uses works too');
+    assert.equal(human('grkn buna bakar misin'), 'nobody', 'a bare name is still not a call');
+    assert.equal(human('@grknbyk bak'), 'nobody');
 });

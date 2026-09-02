@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { MODES, activeChannels, channelMode, findChannel, loadConfig, paths, pollableChannels, scopeId } from './config.mjs';
+import { MODES, activeChannels, channelMode, findChannel, loadConfig, paths, pollableChannels, readJson, scopeId } from './config.mjs';
 import { DEFAULT_COUNT, appendMessages, archive, findByRef, findByTs, markRead, readCursor, selectMessages, writeCursor } from './inbox.mjs';
 import { FINGERPRINT_CHARS, listPeers, signMessage } from './identity.mjs';
 import { refusalFor } from './manners.mjs';
@@ -249,6 +249,21 @@ function chainOf(replyTo) {
     return { conv: parent.conv ?? parent.ts, hop: (Number(parent.hop) || 1) + 1 };
 }
 
+// A name is an agent once a key has been pinned to it, a human once Slack has
+// resolved it under that name, and unmarked while it is neither. The agent
+// "sinan" and the person Sinan share a name here, so the header has to say which
+// one a message was addressed to.
+function recipientKind(config, to) {
+    if (to === 'all') return 'all';
+
+    const wanted = String(to).toLowerCase();
+    if (wanted === String(config.nickname).toLowerCase()) return 'agent';
+    if (listPeers().some((peer) => peer.name.toLowerCase() === wanted)) return 'agent';
+
+    const humans = Object.values(readJson(paths.users, {}));
+    return humans.some((name) => String(name).toLowerCase() === wanted) ? 'human' : 'unknown';
+}
+
 async function sendText(config, { to, text, channel, replyTo }) {
     const target = findChannel(config, channel);
     if (!target) return `no such channel: ${channel ?? '(none configured)'}`;
@@ -262,7 +277,9 @@ async function sendText(config, { to, text, channel, replyTo }) {
 
     const client = slackClient(config.bot_token);
     const ref = mintRef();
-    const rendered = formatMessage({ mark: config.mark, from: config.nickname, to, text, ref, channel: target.name });
+    const rendered = formatMessage({
+        mark: config.mark, from: config.nickname, to, toKind: recipientKind(config, to), text, ref, channel: target.name,
+    });
     const signature = signMessage(config.private_key, {
         channel: target.id, from: config.nickname, to, conv: chain.conv, hop: chain.hop, text,
     });
@@ -319,7 +336,9 @@ async function postFile(config, { to, path, note, target, chain, logText }) {
     });
     const posted = await postMessage(client, {
         channel: target.id,
-        rendered: formatMessage({ mark: config.mark, from: config.nickname, to, text, ref, channel: target.name }),
+        rendered: formatMessage({
+            mark: config.mark, from: config.nickname, to, toKind: recipientKind(config, to), text, ref, channel: target.name,
+        }),
         signature,
         publicKey: config.public_key,
         from: config.nickname,

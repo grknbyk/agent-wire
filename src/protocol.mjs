@@ -68,8 +68,23 @@ export function displayWidth(text) {
 // one line costs less than losing a character of somebody's name.
 export const HEADER_WIDTH = 60;
 
-export function formatMessage({ mark, from, to, text, ref, channel }) {
-    const left = `${mark ? `${mark} ` : ''}${from} => ${to}`;
+// The status panel already reads * for an agent and @ for a human, so the header
+// borrows the same two characters rather than inventing a third vocabulary. One
+// name can belong to both (the agent "sinan" and the person Sinan), and the whole
+// point of the marker is that the header says which one a message went to.
+//
+// Only the recipient is marked. Every header line was written by an agent, so a
+// marker on the sender would have been the one field that can never vary.
+//
+// A name nobody has placed stays bare. Guessing "human" for an unknown recipient
+// would put the marker on exactly the messages it is least sure about.
+const RECIPIENT_MARK = { agent: '*', human: '@' };
+
+export const addressLine = ({ from, to, toKind }) =>
+    `${from} => ${to === 'all' ? 'all' : `${RECIPIENT_MARK[toKind] ?? ''}${to}`}`;
+
+export function formatMessage({ mark, from, to, toKind, text, ref, channel }) {
+    const left = `${mark ? `${mark} ` : ''}${addressLine({ from, to, toKind })}`;
     if (!ref) return `${left}\n${toSlackText(text)}\n`;
 
     // Shipped once without this: a call site forgot the channel, the handle went out
@@ -81,8 +96,10 @@ export function formatMessage({ mark, from, to, text, ref, channel }) {
     return `${left}${' '.repeat(gap)}${handle}\n${toSlackText(text)}\n`;
 }
 
-// Rejects "*" as a sender so a bold-wrapped line cannot file a message under "*".
-const HEADER = /^(?:(?<mark>\S+)\s+)?(?<from>[^\s=*]+)\s*=>\s*(?<to>\S+?)(?:\s+(?<refChannel>[a-z0-9][\w.-]*)?@(?<ref>[a-z2-9]{4,12}))?$/;
+// The leading * on a sender is ours; a *bold* line is not, which is why the name
+// after it still cannot contain one. The recipient's own marker is stripped by the
+// pattern rather than kept, because the payload is what routing reads.
+const HEADER = /^(?:(?<mark>\S+)\s+)?\*?(?<from>[^\s=*]+)\s*=>\s*[@*]?(?<to>\S+?)(?:\s+(?<refChannel>[a-z0-9][\w.-]*)?@(?<ref>[a-z2-9]{4,12}))?$/;
 
 export function parseMessage(raw) {
     const lines = fromSlackText(String(raw ?? '').replace(/\r\n/g, '\n')).trim().split('\n');
@@ -137,10 +154,12 @@ export function addressee(item, myNickname) {
     }
 
     const text = String(item.text).toLowerCase();
-    const tag = `@${myNickname.toLowerCase()}`;
-    for (let at = text.indexOf(tag); at !== -1; at = text.indexOf(tag, at + 1)) {
-        const after = text[at + tag.length];
-        if (after === undefined || !CONTINUES.test(after)) return 'you';
+    for (const prefix of ['@', '*']) {
+        const tag = `${prefix}${myNickname.toLowerCase()}`;
+        for (let at = text.indexOf(tag); at !== -1; at = text.indexOf(tag, at + 1)) {
+            const after = text[at + tag.length];
+            if (after === undefined || !CONTINUES.test(after)) return 'you';
+        }
     }
     return 'nobody';
 }

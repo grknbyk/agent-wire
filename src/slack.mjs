@@ -317,6 +317,11 @@ export async function pollChannel(client, channel, { since, myNickname }) {
         const history = await client.form('conversations.history', {
             channel: channel.id,
             limit: PAGE_LIMIT,
+            // Without this Slack returns no metadata at all, so every message
+            // another agent signed arrives looking like a bare bot post and is
+            // dropped two lines below. Humans were unaffected, which is why the
+            // log looked healthy while no peer was ever seen.
+            include_all_metadata: true,
             ...(since ? { oldest: since } : {}),
             ...(cursor ? { cursor } : {}),
         });
