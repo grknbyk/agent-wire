@@ -5,6 +5,7 @@ import { existsSync, statSync } from 'node:fs';
 
 import { channelMode, loadConfig, paths, readJson } from './config.mjs';
 import { hookState } from './hook.mjs';
+import { updateNotice } from './version.mjs';
 import { displayWidth } from './protocol.mjs';
 import { readInbox, stateOf } from './inbox.mjs';
 
@@ -158,8 +159,11 @@ export function renderStatus(config) {
         ? `\n  nothing is delivering: no prompt hook. \`agent-wire doctor\` prints the fix.`
         : '';
 
+    const stale = updateNotice();
+    const upgrade = stale ? `\n  ${stale}` : '';
+
     // The leading blank line keeps the box off the command that produced it.
-    return `\n${lines.join('\n')}${warning}`;
+    return `\n${lines.join('\n')}${warning}${upgrade}`;
 }
 
 export function runStatus() {

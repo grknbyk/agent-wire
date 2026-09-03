@@ -15,6 +15,7 @@ export const paths = {
     users: join(HOME, 'users.json'),
     files: join(HOME, 'files'),
     pollLock: join(HOME, 'poll.lock'),
+    update: join(HOME, 'update.json'),
 };
 
 export const readJson = (file, fallback) => (existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : fallback);
@@ -174,6 +175,15 @@ export function pollableChannels(config) {
 // replays everything that arrived meanwhile instead of losing it.
 // Returns what the channel was as well as what it is now, so the caller can say
 // "this replays what you missed" only when something was actually missed.
+// A client that compacts or resumes hands the next turn a NEW session id, so a
+// mode stored only under the old one is orphaned and the channel silently falls
+// back to ask. The folder entry is written alongside it, which is the thing that
+// survives: a fresh session in the same directory inherits what the last one
+// chose, and still overrides it the moment it sets its own.
+//
+// Last writer wins on the folder entry. Two sessions disagreeing in one folder is
+// the case that has to lose something, and losing the older choice is the one a
+// person can see and redo.
 export function setChannelMode(name, mode) {
     const config = loadConfig();
     if (!config) return null;
@@ -183,10 +193,30 @@ export function setChannelMode(name, mode) {
 
     const previous = channelMode(config, channel);
     const scopes = config.scopes ?? {};
-    scopes[scopeId()] = { ...scopes[scopeId()], [channel.name]: mode };
-    config.scopes = scopes;
+    for (const scope of new Set([scopeId(), projectScope()])) {
+        scopes[scope] = { ...scopes[scope], [channel.name]: mode };
+    }
+    config.scopes = prunedScopes(scopes);
     saveConfig(config);
     return { channel, previous };
+}
+
+// One key per session id, and session ids are minted faster than they are ever
+// reused. Folder entries are the ones worth keeping, so only session keys are
+// dropped, oldest first.
+const SCOPES_MAX = 60;
+const SCOPES_KEEP = 40;
+
+function prunedScopes(scopes) {
+    const keys = Object.keys(scopes);
+    if (keys.length <= SCOPES_MAX) return scopes;
+
+    const folders = new Set([projectScope()]);
+    for (const key of keys) if (key.includes(':') || key.includes('/')) folders.add(key);
+
+    const sessions = keys.filter((key) => !folders.has(key));
+    const doomed = new Set(sessions.slice(0, Math.max(0, keys.length - SCOPES_KEEP)));
+    return Object.fromEntries(keys.filter((key) => !doomed.has(key)).map((key) => [key, scopes[key]]));
 }
 
 export function findChannel(config, wanted) {

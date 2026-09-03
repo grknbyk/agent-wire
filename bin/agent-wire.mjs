@@ -49,9 +49,19 @@ async function drain() {
     if (!config) return 0;
 
     const { pollOnce } = await import('../src/mcp.mjs');
-    await pollOnce(config).catch(() => {
-        // Offline is not an error here; the next drain catches up.
-    });
+    const { refreshLatest, updateNotice } = await import('../src/version.mjs');
+    await Promise.all([
+        pollOnce(config).catch(() => {
+            // Offline is not an error here; the next drain catches up.
+        }),
+        refreshLatest(),
+    ]);
+
+    // Printed before the messages, and on every prompt until somebody acts on it.
+    // An agent-wire too old to understand the wire format is worse than a line of
+    // noise in the prompt.
+    const stale = updateNotice();
+    if (stale) console.log(stale);
 
     const heard = activeChannels(config);
     const waiting = selectMessages({
@@ -60,6 +70,7 @@ async function drain() {
         channels: heard.map((channel) => channel.name),
     });
     if (waiting.length === 0) return 0;
+
 
     const { lines, readItems } = drainReport(config, heard, waiting, mintNonce());
     if (lines.length === 0) return 0;

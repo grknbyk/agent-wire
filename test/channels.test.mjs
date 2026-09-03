@@ -71,8 +71,20 @@ test('another session keeps its own mode for the same channel', () => {
     config.scopes['d:\\other'] = { 'agent-wms': 'read' };
 
     assert.equal(channelMode(config, wms), 'off');
-    assert.equal(channelMode(config, wms, 'd:\\other'), 'read');
-    assert.equal(channelMode(config, wms, 'd:\\never-set'), 'ask');
+    assert.equal(channelMode(config, wms, 'd:\\other'), 'read', 'a session that chose keeps its choice');
+});
+
+// A compact or a --resume hands the next turn a new session id. The mode was
+// stored under the old one, and the channel used to go quiet without anyone
+// touching it.
+test('a session id nobody has seen before inherits the folder choice', () => {
+    setChannelMode('agent-wms', 'read');
+
+    const config = loadConfig();
+    const wms = config.channels[0];
+
+    assert.equal(channelMode(config, wms, 'session-minted-after-a-compact'), 'read');
+    assert.equal(config.scopes[projectScope()]['agent-wms'], 'read', 'the folder entry is what survives');
 });
 
 // One poller feeds every session, so the quietest session must not decide what

@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { loadConfig, patchConfig, paths } from './config.mjs';
 import { joinedChannels, probeToken, slackClient } from './slack.mjs';
 import { hookSnippet, hookState, installHook, settingsPath } from './hook.mjs';
+import { installedVersion, refreshLatest, updateNotice } from './version.mjs';
 import { FINGERPRINT_CHARS, generateKeypair } from './identity.mjs';
 import { formatMessage } from './protocol.mjs';
 
@@ -207,6 +208,10 @@ export async function runDoctor() {
         return 1;
     }
 
+    // Forced: doctor is what someone runs when something is wrong, and the cached
+    // answer is exactly what would be stale in that moment.
+    await refreshLatest({ force: true });
+
     const client = slackClient(config.bot_token);
     const token = await probeToken(client);
     console.log(token.ok ? `token      ok (${token.team})` : `token      FAILED — ${explain(token.reason)}`);
@@ -234,6 +239,9 @@ export async function runDoctor() {
     // The mode is a setting; the hook is what acts on it. A channel reading `read`
     // with five unread and no hook behind it says the thing is working when it has
     // not delivered a word, so this is a failure and not a note.
+    const stale = updateNotice();
+    console.log(stale ? `version    OLD — ${stale}` : `version    ${installedVersion()}, the newest published`);
+
     const delivery = hookState();
     console.log(DELIVERY_REPORT[delivery]);
     if (delivery === 'missing') {
