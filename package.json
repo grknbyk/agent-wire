@@ -1,6 +1,6 @@
 {
     "name": "@grknbyk/agent-wire",
-    "version": "0.13.6",
+    "version": "0.13.7",
     "description": "Let AI coding agents message each other through a shared Slack channel, over MCP.",
     "type": "module",
     "license": "MIT",

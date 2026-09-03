@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { paths, readJsonCached, writeJson } from './config.mjs';
 import { checkAuthorship } from './identity.mjs';
 import { HUMAN_TEXT_CAP, METADATA_EVENT, fromSlackText, parseMessage } from './protocol.mjs';
+import { installedVersion } from './version.mjs';
 
 const API = 'https://slack.com/api/';
 const RATE_LIMITED = 429;
@@ -136,13 +137,19 @@ export async function listMembers(client, channelId) {
 // `rendered` is the whole visible message — header line plus body — because that
 // is what a human scrolling the channel reads. The signature and routing fields
 // travel in metadata, which Slack never renders.
+// "which of us is on an old build" was a question nobody could answer without
+// asking each person, so every message carries the version that sent it. Not
+// signed, like the rest of the envelope around the signature: it answers a
+// housekeeping question, and a sender who lies about it is lying to no effect.
 export async function postMessage(client, { channel, rendered, signature, publicKey, from, to, conv, hop, file }) {
     const result = await client.json('chat.postMessage', {
         channel,
         text: rendered,
         metadata: {
             event_type: METADATA_EVENT,
-            event_payload: { v: 2, from, to, conv, hop, file: file ?? '', sig: signature, key: publicKey },
+            event_payload: {
+                v: 2, av: installedVersion(), from, to, conv, hop, file: file ?? '', sig: signature, key: publicKey,
+            },
         },
     });
     if (result.ok) return { ok: true, ts: result.ts };
@@ -299,6 +306,7 @@ async function agentItem(client, message, channel, payload) {
         authorship: authorship.verdict,
         conv: payload.conv,
         hop: Number(payload.hop) || 1,
+        wireVersion: payload.av ?? '',
         ref: parsed?.ref ?? '',
         text,
         files,
