@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { MODES, activeChannels, channelMode, findChannel, loadConfig, paths, pollableChannels, readJson, scopeId } from './config.mjs';
+import { MODES, activeChannels, channelMode, findChannel, isAmbiguous, loadConfig, paths, pollableChannels, readJson, scopeId } from './config.mjs';
 import { DEFAULT_COUNT, appendMessages, archive, findByRef, findByTs, markRead, readCursor, selectMessages, writeCursor } from './inbox.mjs';
 import { FINGERPRINT_CHARS, listPeers, signMessage } from './identity.mjs';
 import { refusalFor } from './manners.mjs';
@@ -109,7 +109,7 @@ const TOOLS = [
         description: 'Everyone in one channel, agents and humans alike. Only channels the bot was invited to can be asked about; there is no way to list the workspace.',
         inputSchema: {
             type: 'object',
-            properties: { channel: { type: 'string', description: 'channel name; defaults to the first configured channel' } },
+            properties: { channel: { type: 'string', description: 'channel name. Omit it only while one channel is configured; past that, omitting it is refused rather than guessed' } },
         },
     },
     {
@@ -133,7 +133,7 @@ const TOOLS = [
             properties: {
                 to: { type: 'string', description: 'recipient nickname, or "all"' },
                 text: { type: 'string' },
-                channel: { type: 'string', description: 'channel name; defaults to the first configured channel' },
+                channel: { type: 'string', description: 'channel name. Omit it only while one channel is configured; past that, omitting it is refused rather than guessed' },
                 reply_to: { type: 'string', description: 'the ts of the message being answered, as shown by inbox' },
             },
             required: ['to', 'text'],
@@ -148,7 +148,7 @@ const TOOLS = [
                 to: { type: 'string', description: 'recipient nickname, or "all"' },
                 path: { type: 'string', description: 'path of the file to send' },
                 note: { type: 'string', description: 'one line saying what the file is' },
-                channel: { type: 'string', description: 'channel name; defaults to the first configured channel' },
+                channel: { type: 'string', description: 'channel name. Omit it only while one channel is configured; past that, omitting it is refused rather than guessed' },
                 reply_to: { type: 'string', description: 'the ts of the message being answered, as shown by inbox' },
             },
             required: ['to', 'path'],
@@ -160,6 +160,12 @@ const TOOLS = [
         inputSchema: { type: 'object', properties: { ts: { type: 'string', description: 'archive one message by its ts' } } },
     },
 ];
+
+// Says which of the two happened, because "no such channel: undefined" reads as a
+// broken tool rather than as a missing argument.
+const noChannel = (config, wanted) => (isAmbiguous(config, wanted)
+    ? `name the channel: ${config.channels.map((channel) => channel.name).join(', ')}`
+    : `no such channel: ${wanted ?? '(none configured)'}`);
 
 const isBlank = (value) => value === undefined || value === null || (typeof value === 'string' && !value.trim());
 
@@ -241,11 +247,12 @@ function modeInstruction(mode, channel) {
 //
 // A channel that throws is caught here rather than at the caller, so one broken
 // channel costs its own messages instead of everybody else's.
-export async function pollOnce(config) {
-    const client = slackClient(config.bot_token);
+export async function pollOnce(config, { budgetMs = null } = {}) {
     const channels = pollableChannels(config);
+    const deadline = budgetMs ? Date.now() + budgetMs : null;
+    const client = slackClient(config.bot_token, { deadline });
     const polled = await mapLimit(channels, CHANNEL_CONCURRENCY, (channel) =>
-        pollChannel(client, channel, { since: readCursor(channel.id), myNickname: config.nickname })
+        pollChannel(client, channel, { since: readCursor(channel.id), myNickname: config.nickname, deadline })
             .catch((error) => ({ ok: false, reason: error.message, items: [] })));
 
     let added = 0;
@@ -286,7 +293,7 @@ function recipientKind(config, to) {
 
 async function sendText(config, { to, text, channel, replyTo }) {
     const target = findChannel(config, channel);
-    if (!target) return `no such channel: ${channel ?? '(none configured)'}`;
+    if (!target) return noChannel(config, channel);
 
     const chain = chainOf(replyTo);
     if (chain.hop > MAX_HOPS) {
@@ -437,7 +444,7 @@ async function call(name, args, session) {
 
     if (name === 'members') {
         const target = findChannel(config, args.channel);
-        if (!target) return `no such channel: ${args.channel ?? '(none configured)'}`;
+        if (!target) return noChannel(config, args.channel);
 
         const result = await listMembers(slackClient(config.bot_token), target.id);
         if (!result.ok) return `Slack said: ${result.reason}`;
@@ -481,7 +488,7 @@ async function call(name, args, session) {
 
     if (name === 'send_file') {
         const target = findChannel(config, args.channel);
-        if (!target) return `no such channel: ${args.channel ?? '(none configured)'}`;
+        if (!target) return noChannel(config, args.channel);
         if (!existsSync(args.path)) return `no such file: ${args.path}`;
 
         const result = await postFile(config, {

@@ -222,7 +222,13 @@ function prunedScopes(scopes) {
     return Object.fromEntries(keys.filter((key) => !doomed.has(key)).map((key) => [key, scopes[key]]));
 }
 
+// Naming no channel is an answer only while there is one channel to mean. Past
+// that it is a call that forgot the argument, and picking the first one sends
+// somebody's work to the wrong room without a word.
+export const isAmbiguous = (config, wanted) => !wanted && (config?.channels?.length ?? 0) > 1;
+
 export function findChannel(config, wanted) {
+    if (isAmbiguous(config, wanted)) return null;
     if (!wanted) return defaultChannel(config);
     const name = String(wanted).replace(/^#/, '').toLowerCase();
     return config.channels?.find((channel) => channel.name.toLowerCase() === name || channel.id === wanted) ?? null;

@@ -172,7 +172,12 @@ Every channel the bot is in is a channel it works in. Slack owns that list, so
 keeps working: the config stores the id and refreshes the name.
 
 Every message is tagged with the channel it came from, `send` takes an optional
-`channel`, and `inbox` can filter by one. The first entry is the default.
+`channel`, and `inbox` can filter by one.
+
+Omitting `channel` works while one channel is configured. Past that it is
+refused, and the refusal lists the names. Picking the first entry would send
+somebody's work to the wrong room without a word, and a convention that says
+"always pass channel" is a rule nobody enforces at the moment it matters.
 
 To stop hearing about one, switch it off in that session rather than editing the
 config: `agent-wire off agent-hcm`. Removing it from the file only lasts until

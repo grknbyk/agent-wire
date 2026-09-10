@@ -11,6 +11,13 @@ import { installedVersion } from './version.mjs';
 const API = 'https://slack.com/api/';
 const RATE_LIMITED = 429;
 const DEFAULT_RETRY_SECONDS = 5;
+
+// conversations.history is rate limited per workspace, and the whole team shares
+// one app. Retrying a 429 forever meant a rate-limited machine waited forever, on
+// every prompt, because the prompt hook polls too. Three tries, and a request that
+// hangs is cut rather than waited on.
+const MAX_RETRIES = 3;
+const REQUEST_TIMEOUT_MS = 15000;
 const PAGE_LIMIT = 100;
 const MAX_PAGES = 10;
 const MEMBER_LIMIT = 200;
@@ -56,17 +63,33 @@ export async function mapLimit(items, limit, run) {
 // conversations.* reject a JSON body and chat.postMessage needs one for metadata,
 // so the client speaks both and the caller picks per method. The token rides along
 // because downloading a file is a plain fetch, not an API call.
-export function slackClient(token) {
-    const request = async (method, init) => {
-        const response = await fetch(API + method, {
-            ...init,
-            headers: { authorization: `Bearer ${token}`, ...init.headers },
-        });
+// A failure comes back shaped like Slack's own answer rather than thrown, because
+// every caller already reads result.ok and none of them is wrapped in a try.
+export function slackClient(token, { deadline = null } = {}) {
+    const timeoutFor = () => {
+        if (!deadline) return REQUEST_TIMEOUT_MS;
+        return Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now()));
+    };
+
+    const request = async (method, init, attempt = 1) => {
+        let response;
+        try {
+            response = await fetch(API + method, {
+                ...init,
+                signal: AbortSignal.timeout(timeoutFor()),
+                headers: { authorization: `Bearer ${token}`, ...init.headers },
+            });
+        } catch (error) {
+            return { ok: false, error: error.name === 'TimeoutError' ? 'timeout' : 'network_error' };
+        }
         if (response.status !== RATE_LIMITED) return response.json();
 
-        const wait = Number(response.headers.get('retry-after') || DEFAULT_RETRY_SECONDS);
-        await new Promise((done) => setTimeout(done, wait * 1000));
-        return request(method, init);
+        const waitMs = Number(response.headers.get('retry-after') || DEFAULT_RETRY_SECONDS) * 1000;
+        if (attempt >= MAX_RETRIES) return { ok: false, error: 'ratelimited' };
+        if (deadline && Date.now() + waitMs > deadline) return { ok: false, error: 'ratelimited' };
+
+        await new Promise((done) => setTimeout(done, waitMs));
+        return request(method, init, attempt + 1);
     };
 
     return {
@@ -275,7 +298,7 @@ async function humanItem(client, message, channel, namesById) {
     };
 }
 
-async function agentItem(client, message, channel, payload) {
+async function agentItem(client, message, channel, payload, inHurry = false) {
     const parsed = parseMessage(message.text ?? '');
     const text = parsed?.text ?? fromSlackText(message.text ?? '');
     const authorship = checkAuthorship({
@@ -292,8 +315,13 @@ async function agentItem(client, message, channel, payload) {
 
     // Fetched only after the signature holds. Pulling bytes for a message that
     // failed verification is doing an impostor's downloading for them.
+    //
+    // Skipped entirely when the caller is against a deadline: a prompt hook cannot
+    // wait on somebody's 15 MB export, and the file is still in Slack for the next
+    // poll to fetch.
     const isTrusted = authorship.verdict === 'signed' || authorship.verdict === 'new';
-    const files = payload.file && isTrusted ? await downloadById(client, payload.file) : [];
+    const wanted = payload.file && isTrusted && !inHurry;
+    const files = wanted ? await downloadById(client, payload.file) : [];
 
     return {
         ts: message.ts,
@@ -316,12 +344,17 @@ async function agentItem(client, message, channel, payload) {
 // Returns items oldest-first. With `oldest` set, Slack answers from the old end of
 // the range, so messages[0] is the high-water mark and a burst wider than one page
 // is carried across polls rather than dropped.
-export async function pollChannel(client, channel, { since, myNickname }) {
+export async function pollChannel(client, channel, { since, myNickname, deadline = null }) {
     const items = [];
     let newest = since;
     let cursor = '';
 
     for (let page = 0; page < MAX_PAGES; page++) {
+        // Out of time. What has been read is returned and the cursor moves with
+        // it, so the next poll starts where this one stopped rather than repeating
+        // the work. A partial answer now beats a whole one after the prompt.
+        if (deadline && Date.now() > deadline) break;
+
         const history = await client.form('conversations.history', {
             channel: channel.id,
             limit: PAGE_LIMIT,
@@ -349,7 +382,7 @@ export async function pollChannel(client, channel, { since, myNickname }) {
             const payload = message.metadata?.event_type === METADATA_EVENT ? message.metadata.event_payload : null;
             if (payload) {
                 if (payload.from === myNickname) continue; // our own post, already in our log
-                items.push(await agentItem(client, message, channel, payload));
+                items.push(await agentItem(client, message, channel, payload, Boolean(deadline)));
                 continue;
             }
             if (message.bot_id) continue; // another app, or the bare upload our own sidecar describes

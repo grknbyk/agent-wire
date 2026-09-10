@@ -177,3 +177,18 @@ test('this agent never waits on its own messages', () => {
     assert.deepEqual(waiting.map((item) => item.from), ['mira']);
     assert.equal(selectMessages({ state: 'all', channel: 'selftest' }).length, 2);
 });
+
+// A call that forgot the argument used to go to whichever channel happened to be
+// first in the list.
+test('naming no channel is an answer only while there is one channel to mean', async () => {
+    const { findChannel, isAmbiguous } = await import('../src/config.mjs');
+    const one = { channels: [{ id: 'C01', name: 'wms-agents' }] };
+    const two = { channels: [{ id: 'C01', name: 'wms-agents' }, { id: 'C02', name: 'kazci-agents' }] };
+
+    assert.equal(findChannel(one, null).name, 'wms-agents', 'one channel needs no name');
+    assert.equal(isAmbiguous(one, null), false);
+
+    assert.equal(findChannel(two, null), null, 'two channels and no name is a refusal');
+    assert.equal(isAmbiguous(two, null), true);
+    assert.equal(findChannel(two, 'kazci-agents').name, 'kazci-agents', 'naming it still works');
+});

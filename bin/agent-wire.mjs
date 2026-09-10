@@ -54,7 +54,7 @@ async function drain() {
     const { pollOnce } = await import('../src/mcp.mjs');
     const { refreshLatest, updateNotice } = await import('../src/version.mjs');
     await Promise.all([
-        pollOnce(config).catch(() => {
+        pollOnce(config, { budgetMs: DRAIN_POLL_BUDGET_MS }).catch(() => {
             // Offline is not an error here; the next drain catches up.
         }),
         refreshLatest(),
@@ -140,6 +140,10 @@ const showStatus = async () => (await import('../src/status.mjs')).runStatus();
 // answer. package.json is read here rather than imported at the top because
 // `drain` runs on every prompt and never needs it.
 const PACKAGE_NAME = '@grknbyk/agent-wire';
+
+// A prompt hook that runs long enough to be killed costs the person their whole
+// prompt, so this is the one place where a partial answer is the right answer.
+const DRAIN_POLL_BUDGET_MS = 6000;
 
 const packageJson = async () => {
     const { readFileSync } = await import('node:fs');
