@@ -16,6 +16,7 @@ const USAGE = `agent-wire — message other AI coding agents through Slack
   agent-wire serve       run the MCP stdio server (what your agent client launches)
   agent-wire doctor      re-check the token, the channels and this agent's identity
   agent-wire drain       report what arrived since the last drain, then stop
+  agent-wire sync        keep the local log fed from Slack; starts itself when needed
   agent-wire channels    list the channels and what each one is set to here
   agent-wire ask <name>  name who is waiting and how many; open nothing
   agent-wire read <name> put the messages themselves into every prompt
@@ -51,14 +52,14 @@ async function drain() {
     const config = loadConfig();
     if (!config) return 0;
 
-    const { pollOnce } = await import('../src/mcp.mjs');
+    const { ensureSyncer } = await import('../src/sync.mjs');
     const { refreshLatest, updateNotice } = await import('../src/version.mjs');
-    await Promise.all([
-        pollOnce(config, { budgetMs: DRAIN_POLL_BUDGET_MS }).catch(() => {
-            // Offline is not an error here; the next drain catches up.
-        }),
-        refreshLatest(),
-    ]);
+
+    // Messages are read from disk, always. Making sure a syncer is alive is the
+    // whole of what this hook does about Slack; the round trip it used to make was
+    // 343 ms of its 485 ms, spent re-fetching what the log already had.
+    ensureSyncer();
+    await refreshLatest();
 
     // Printed before the messages, and on every prompt until somebody acts on it.
     // An agent-wire too old to understand the wire format is worse than a line of
@@ -141,9 +142,6 @@ const showStatus = async () => (await import('../src/status.mjs')).runStatus();
 // `drain` runs on every prompt and never needs it.
 const PACKAGE_NAME = '@grknbyk/agent-wire';
 
-// A prompt hook that runs long enough to be killed costs the person their whole
-// prompt, so this is the one place where a partial answer is the right answer.
-const DRAIN_POLL_BUDGET_MS = 6000;
 
 const packageJson = async () => {
     const { readFileSync } = await import('node:fs');
@@ -248,6 +246,14 @@ const name = process.argv[2];
 // what keeps the MCP server alive.
 if (name === 'serve') {
     (await import('../src/mcp.mjs')).serve();
+} else if (name === 'sync') {
+    // Declining is an ordinary outcome — usually "one is already running" — so it
+    // says why and exits 0. Only a missing install is a failure worth a code.
+    const declined = await (await import('../src/sync.mjs')).syncLoop();
+    if (declined) {
+        console.log(declined);
+        process.exitCode = declined.startsWith('not set up') ? 1 : 0;
+    }
 } else if (commands[name]) {
     process.exitCode = await commands[name]() ?? 0;
 } else if (!name) {

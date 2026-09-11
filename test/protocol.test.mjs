@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { HEADER_WIDTH, addressee, displayWidth, formatMessage, fromSlackText, mintNonce, mintRef, parseMessage, renderEnvelope, toSlackText } from '../src/protocol.mjs';
+import { HEADER_WIDTH, addressee, displayWidth, formatMessage, fromSlackText, mintNonce, mintRef, parseMessage, recipientNames, renderEnvelope, splitHandle, toSlackText } from '../src/protocol.mjs';
 
 test('a formatted message parses back to the same fields', () => {
     const rendered = formatMessage({ mark: '🔥', from: 'grkn', to: 'mira', text: 'ready when you are' });
@@ -244,4 +244,94 @@ test('a mark written as a Slack shortcode is measured as the emoji it draws', ()
         'the two forms padded to different widths',
     );
     assert.ok(shortcode.endsWith('wms-agents@k7m2pq'), shortcode);
+});
+
+// Two lookups read a handle through splitHandle: the log, and the channel sweep
+// behind it. If they ever disagree about what the string means, a handle resolves
+// one way when the log has it and another way when only Slack does.
+test('a handle means the same thing however a person pasted it', () => {
+    assert.deepEqual(splitHandle('wms-agents@k7m2pq'), { channel: 'wms-agents', ref: 'k7m2pq' });
+
+    // Copied off a header, the channel half usually comes along. Typed by hand it
+    // usually does not, and neither form may narrow to a channel called ''.
+    assert.deepEqual(splitHandle('@k7m2pq'), { channel: '', ref: 'k7m2pq' });
+    assert.deepEqual(splitHandle('k7m2pq'), { channel: '', ref: 'k7m2pq' });
+});
+
+test('a handle is matched case-insensitively, the way it is read aloud', () => {
+    assert.deepEqual(splitHandle('WMS-Agents@K7M2PQ'), { channel: 'wms-agents', ref: 'k7m2pq' });
+});
+
+const KINDS = { huso: 'agent', sinan: 'agent', hako: 'agent', 'hüseyin': 'human' };
+const header = (to, extra = {}) => formatMessage({
+    mark: ':fire:', from: 'grkn', to, toKind: KINDS, text: 'hazir', ...extra,
+}).split('\n')[0];
+
+test('a recipient list is written however the sender typed it', () => {
+    assert.deepEqual(recipientNames('huso sinan'), ['huso', 'sinan']);
+    assert.deepEqual(recipientNames('@huso, @sinan'), ['huso', 'sinan'], 'a model copies the markers back out of a header');
+    assert.deepEqual(recipientNames('  huso   sinan  '), ['huso', 'sinan']);
+    assert.deepEqual(recipientNames('all'), ['all']);
+    assert.deepEqual(recipientNames(''), []);
+});
+
+test('each recipient carries its own marker, agent or human', () => {
+    assert.match(header('huso sinan'), /grkn => @huso @sinan/);
+    assert.match(header('huso hüseyin'), /grkn => @huso \+hüseyin/, 'one message can reach an agent and a person');
+    assert.match(header('all'), /grkn => all/);
+    assert.match(header('mira'), /grkn => mira/, 'an unknown name is drawn bare rather than claimed to be an agent');
+});
+
+test('being one of several named is being named', () => {
+    const item = { kind: 'agent', to: 'huso sinan', text: 'hazir' };
+    assert.equal(addressee(item, 'huso'), 'you');
+    assert.equal(addressee(item, 'sinan'), 'you');
+    assert.equal(addressee(item, 'hako'), 'huso sinan', 'an agent not on the list is told who it was for');
+
+    // A nickname that merely contains another must not match: @grkn is not @grknbyk.
+    assert.equal(addressee({ kind: 'agent', to: 'grknbyk', text: 'hazir' }, 'grkn'), 'grknbyk');
+});
+
+test('a recipient shaped like a handle is still a recipient', () => {
+    // This shipped broken once. "@sinan" is six characters from the ref alphabet,
+    // exactly the shape of "@k7m2pq", so while the channel in front of a handle was
+    // optional the last recipient of a handle-less header was parsed as its ref.
+    const parsed = parseMessage(header('huso sinan') + '\nhazir');
+    assert.equal(parsed.to, 'huso sinan');
+    assert.equal(parsed.ref, '', 'sinan is a person, not a handle');
+});
+
+test('a list round-trips with the handle still attached', () => {
+    const rendered = formatMessage({
+        mark: ':fire:', from: 'grkn', to: 'huso sinan hüseyin', toKind: KINDS,
+        text: 'hazir', ref: 'k7m2pq', channel: 'wms-agents',
+    });
+    const parsed = parseMessage(rendered);
+
+    assert.equal(parsed.to, 'huso sinan hüseyin');
+    assert.equal(parsed.ref, 'k7m2pq');
+    assert.equal(parsed.refChannel, 'wms-agents');
+    assert.equal(parsed.text, 'hazir');
+});
+
+test('a long list pushes the handle right rather than hiding a recipient', () => {
+    // The mark is the emoji rather than ":fire:" so that one measurement answers for
+    // both: a shortcode is six characters of string and two columns of Slack, and it
+    // is the columns the padding is computed in.
+    const many = 'huso sinan hako mira deniz ece can';
+    const line = formatMessage({
+        mark: '🔥', from: 'grkn', to: many, toKind: KINDS,
+        text: 'hazir', ref: 'k7m2pq', channel: 'wms-agents',
+    }).split('\n')[0];
+
+    for (const name of many.split(' ')) assert.ok(line.includes(name), `${name} dropped out of the header`);
+    assert.ok(line.endsWith('wms-agents@k7m2pq'));
+    assert.ok(displayWidth(line) > HEADER_WIDTH, 'the straight right edge is what gives way, not a name');
+
+    // And the column is still held whenever the list leaves room for it.
+    const short = formatMessage({
+        mark: '🔥', from: 'grkn', to: 'huso sinan', toKind: KINDS,
+        text: 'hazir', ref: 'k7m2pq', channel: 'wms-agents',
+    }).split('\n')[0];
+    assert.equal(displayWidth(short), HEADER_WIDTH);
 });

@@ -125,6 +125,7 @@ again.
 | `agent-wire serve` | Run the MCP stdio server, which is what your client launches |
 | `agent-wire doctor` | Re-check the token, the channels and the identity |
 | `agent-wire drain` | Print what arrived since last time, for a prompt hook |
+| `agent-wire sync` | Keep the local log fed from Slack; starts itself when needed |
 | `agent-wire channels` | List the channels and what each one is set to here |
 | `agent-wire ask <name>` | Name who is waiting and how many; open nothing |
 | `agent-wire read <name>` | Put the messages themselves into every prompt |
@@ -245,10 +246,20 @@ Read and unread are per session too. They have to be: a session on `read` opens
 everything it is handed, and if that also marked the message read next door, an
 `ask` session would report an empty inbox forever.
 
-The poller is not per session. One poller feeds one shared log for the whole
-machine, so a channel stays polled while any session still wants it. `off` means
-"do not tell me", not "stop collecting". Otherwise the quietest session on the
-machine would decide what the busiest one is allowed to see.
+The syncer is not per session, and it is not the MCP server either. One detached
+`agent-wire sync` process feeds one shared log for the whole machine, so a channel
+stays synced while any session still wants it. `off` means "do not tell me", not
+"stop collecting". Otherwise the quietest session on the machine would decide what
+the busiest one is allowed to see.
+
+Reads never wait for Slack. The MCP server, the prompt hook and the `inbox` tool
+all read the local log; only the syncer talks to Slack, every `sync_seconds` (60 by
+default, floor 5, set it in `config.json`). Measured on one machine, moving the
+round trip out of the prompt hook took `drain` from 603–998 ms to 105–112 ms.
+
+The exception is a handle you ask for by name. If the log does not have it, `inbox`
+sweeps the channel for it — and says that Slack refused rather than that the message
+does not exist, when that is what happened.
 
 ## Working on two of five channels
 
@@ -402,7 +413,7 @@ do with it:
 
 | `addressed` | Who wrote it | What your agent does |
 |---|---|---|
-| `you` | A human typed `@<your nickname>`, or an agent named you | Answer |
+| `you` | A human typed `@<your nickname>`, or an agent named you, alone or among several | Answer |
 | `all` | An agent wrote to everyone | Answer as the conversation needs |
 | `<name>` | An agent wrote to a different agent | Read it, stay quiet |
 | `nobody` | A human wrote without naming any agent | Read it as context, stay quiet |
@@ -411,6 +422,15 @@ Slack has no real mention for an agent, so `@grkn` is ordinary text that
 agent-wire looks for itself. `*grkn` calls it too, since that is the marker the
 header uses. The match is literal and case-insensitive, and it stops at a word
 boundary, so neither form fires for `@grknbyk`.
+
+`send` takes more than one nickname — `to: "huso sinan"` — and the header marks each
+one for what it is, `@huso` an agent and `+hüseyin` a person. Both of them read
+`addressed=you`; nobody else does. That is the difference from `all`, which hands the
+message to every agent in the channel at once.
+
+An agent-wire older than the recipient list compares the whole string to its own
+nickname, so it reads a two-recipient message as being for somebody else and stays
+quiet. One name and `all` are unchanged, so ordinary traffic is unaffected.
 
 Nothing is filtered by this. Every message still arrives, still goes in the
 inbox, and is still readable. It only decides who speaks first. Your own

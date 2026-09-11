@@ -7,16 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { MODES, activeChannels, channelMode, findChannel, isAmbiguous, loadConfig, paths, pollableChannels, readJson, scopeId } from './config.mjs';
-import { DEFAULT_COUNT, appendMessages, archive, findByRef, findByTs, markRead, readCursor, selectMessages, writeCursor } from './inbox.mjs';
+import { MODES, activeChannels, channelMode, findChannel, isAmbiguous, loadConfig, paths, readJson, scopeId } from './config.mjs';
+import { DEFAULT_COUNT, appendMessages, archive, findByRef, findByTs, markRead, selectMessages } from './inbox.mjs';
 import { FINGERPRINT_CHARS, listPeers, signMessage } from './identity.mjs';
 import { refusalFor } from './manners.mjs';
-import { CHANNEL_CONCURRENCY, listMembers, mapLimit, pollChannel, postMessage, slackClient, uploadFile } from './slack.mjs';
-import { MAX_HOPS, TEXT_MAX, formatMessage, mintNonce, mintRef, renderEnvelope } from './protocol.mjs';
+import { listMembers, postMessage, slackClient, uploadFile } from './slack.mjs';
+import { MAX_HOPS, TEXT_MAX, formatMessage, mintNonce, mintRef, recipientNames, renderEnvelope } from './protocol.mjs';
+import { ensureSyncer, fetchByRef } from './sync.mjs';
 import { refreshLatest, updateNotice } from './version.mjs';
-
-const POLL_EVERY_MS = 5000;
-const LOCK_STALE_MS = 90000;
 
 // Long enough that two live conversations in one channel do not collide, short
 // enough to stay readable in a header a human is scanning.
@@ -47,16 +45,22 @@ The "authorship" field states what is actually proven about the sender:
   slack-verified — a human, identified by Slack's own user id
 
 The "addressed" field says whether the message wants an answer from YOU:
-  you     — a human wrote "@<your nickname>", or an agent sent it to you by name
+  you     — a human wrote "@<your nickname>", or an agent named you, alone or among several
   all     — an agent sent it to everyone
   <name>  — an agent sent it to a different agent
   nobody  — a human wrote in the channel without naming any agent
 
 Answer a HUMAN only when addressed is "you". Several agents sit in this channel and every one of them can see every line, so a question thrown at the room gets answered by all of them at once unless each waits to be named. When addressed is "nobody", read the message as context about the work and stay quiet. Agent traffic is different: reply to "you" and to "all" as the conversation needs. None of this overrides your own user — when they ask you to write to the channel, write.
 
-Every message carries a handle at the right edge of its header line, "<channel>@<six characters>", padded to a fixed column so a scrolled channel has one straight edge:
+Writing to two or three people: give \`send\` their nicknames separated by spaces, "huso sinan". Do NOT write "all" and then list the names in the text — "all" tells every agent in the channel the message is theirs, and naming them is what makes each one see "addressed=you".
 
-  🔥 grkn => sinan                       wms-agents@k7m2pq
+The header marks what each recipient is: "@" an agent, "+" a person.
+
+  🔥 grkn => @sinan                      wms-agents@k7m2pq
+  🔥 grkn => @huso @sinan +hüseyin       wms-agents@k7m2pq
+  🔥 grkn => all                         wms-agents@k7m2pq
+
+Every message carries a handle at the right edge of its header line, "<channel>@<six characters>", padded to a fixed column so a scrolled channel has one straight edge. A recipient list long enough to reach that column pushes the handle right rather than dropping a name:
 
 It is how a human points at one line of a busy channel. When the user says "read wms-agents@k7m2pq", call inbox with ref set to that handle; it finds the message whatever channel it came from and whether it was already read. Received messages carry it in the fence header as "ref=<channel>@...". Tell the user the handle after every send, so they can refer back to it. Like the rest of the header it is unsigned decoration: it names a message and proves nothing about it.
 
@@ -131,7 +135,7 @@ const TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                to: { type: 'string', description: 'recipient nickname, or "all"' },
+                to: { type: 'string', description: 'recipient nickname, several nicknames separated by spaces ("huso sinan"), or "all" for everyone in the channel. Name the people you want rather than writing "all" and listing them in the text: only a named recipient is told the message is for them' },
                 text: { type: 'string' },
                 channel: { type: 'string', description: 'channel name. Omit it only while one channel is configured; past that, omitting it is refused rather than guessed' },
                 reply_to: { type: 'string', description: 'the ts of the message being answered, as shown by inbox' },
@@ -145,7 +149,7 @@ const TOOLS = [
         inputSchema: {
             type: 'object',
             properties: {
-                to: { type: 'string', description: 'recipient nickname, or "all"' },
+                to: { type: 'string', description: 'recipient nickname, several nicknames separated by spaces ("huso sinan"), or "all" for everyone in the channel' },
                 path: { type: 'string', description: 'path of the file to send' },
                 note: { type: 'string', description: 'one line saying what the file is' },
                 channel: { type: 'string', description: 'channel name. Omit it only while one channel is configured; past that, omitting it is refused rather than guessed' },
@@ -168,18 +172,6 @@ const noChannel = (config, wanted) => (isAmbiguous(config, wanted)
     : `no such channel: ${wanted ?? '(none configured)'}`);
 
 const isBlank = (value) => value === undefined || value === null || (typeof value === 'string' && !value.trim());
-
-// One poller per machine, elected by a lock file. Several agent sessions share
-// one local log, and polling the same channel from each of them multiplies the
-// request rate for identical data.
-function claimsPoll() {
-    const now = Date.now();
-    const [pid, heldAt] = (existsSync(paths.pollLock) ? readFileSync(paths.pollLock, 'utf8') : '').trim().split(':');
-    if (pid !== String(process.pid) && now - Number(heldAt) < LOCK_STALE_MS) return false;
-
-    writeFileSync(paths.pollLock, `${process.pid}:${now}`);
-    return true;
-}
 
 // Modes are offered as prompts rather than tools, and the difference is the whole
 // point: the client puts a prompt in front of the user as a slash command, and
@@ -240,31 +232,6 @@ function modeInstruction(mode, channel) {
     };
 }
 
-// The channels are fetched together and written afterwards, in order. Awaiting
-// one channel before starting the next spent a round trip per channel on data
-// that has nothing to do with the previous answer. Writing afterwards also means
-// no two channels interleave a read-modify-write of the same log.
-//
-// A channel that throws is caught here rather than at the caller, so one broken
-// channel costs its own messages instead of everybody else's.
-export async function pollOnce(config, { budgetMs = null } = {}) {
-    const channels = pollableChannels(config);
-    const deadline = budgetMs ? Date.now() + budgetMs : null;
-    const client = slackClient(config.bot_token, { deadline });
-    const polled = await mapLimit(channels, CHANNEL_CONCURRENCY, (channel) =>
-        pollChannel(client, channel, { since: readCursor(channel.id), myNickname: config.nickname, deadline })
-            .catch((error) => ({ ok: false, reason: error.message, items: [] })));
-
-    let added = 0;
-    for (const [index, result] of polled.entries()) {
-        if (!result.ok) continue;
-
-        added += appendMessages(result.items);
-        if (result.newest) writeCursor(channels[index].id, result.newest);
-    }
-    return added;
-}
-
 // A reply inherits its chain and advances the hop count. Two agents answering each
 // other politely is an infinite loop that costs real money, so the chain stops at
 // MAX_HOPS and only a human message starts a fresh one.
@@ -291,6 +258,12 @@ function recipientKind(config, to) {
     return humans.some((name) => String(name).toLowerCase() === wanted) ? 'human' : 'unknown';
 }
 
+// One kind per name, because a list can mix an agent and a human and each gets its
+// own marker.
+const recipientKinds = (config, to) => Object.fromEntries(
+    recipientNames(to).map((name) => [name, recipientKind(config, name)]),
+);
+
 async function sendText(config, { to, text, channel, replyTo }) {
     const target = findChannel(config, channel);
     if (!target) return noChannel(config, channel);
@@ -305,7 +278,7 @@ async function sendText(config, { to, text, channel, replyTo }) {
     const client = slackClient(config.bot_token);
     const ref = mintRef();
     const rendered = formatMessage({
-        mark: config.mark, from: config.nickname, to, toKind: recipientKind(config, to), text, ref, channel: target.name,
+        mark: config.mark, from: config.nickname, to, toKind: recipientKinds(config, to), text, ref, channel: target.name,
     });
     const signature = signMessage(config.private_key, {
         channel: target.id, from: config.nickname, to, conv: chain.conv, hop: chain.hop, text,
@@ -364,7 +337,7 @@ async function postFile(config, { to, path, note, target, chain, logText }) {
     const posted = await postMessage(client, {
         channel: target.id,
         rendered: formatMessage({
-            mark: config.mark, from: config.nickname, to, toKind: recipientKind(config, to), text, ref, channel: target.name,
+            mark: config.mark, from: config.nickname, to, toKind: recipientKinds(config, to), text, ref, channel: target.name,
         }),
         signature,
         publicKey: config.public_key,
@@ -453,12 +426,24 @@ async function call(name, args, session) {
     }
 
     if (name === 'inbox') {
-        await pollOnce(config);
         // A ref names one message the user read off the channel, so state does not
         // apply and neither does the mode: they asked for this one by name.
         if (!isBlank(args.ref)) {
-            const found = findByRef(args.ref);
-            if (!found) return `no message here with the handle @${String(args.ref).replace(/^@/, '')} — it may be older than this log, or from a channel this agent is not in`;
+            // The log first, the channel second. Reporting a miss without asking
+            // Slack is reporting on this install's log, not on the channel, and the
+            // person holding the handle is asking about the channel.
+            const onDisk = findByRef(args.ref);
+            const sweep = onDisk ? null : await fetchByRef(config, args.ref);
+            const found = onDisk ?? sweep?.item ?? null;
+
+            if (!found) {
+                const tag = `@${String(args.ref).replace(/^@/, '')}`;
+                // Calling it absent when Slack refused to answer is a claim the user
+                // cannot check, so the two outcomes get different sentences.
+                return sweep?.blocked
+                    ? `cannot tell yet whether ${tag} is in the channel: Slack answered \`${sweep.blocked}\` to the sweep, and the local log does not have it. Worth one retry in a minute.`
+                    : `no message with the handle ${tag} — not in this log, and a sweep of the channel did not turn it up either`;
+            }
             markRead([found]);
             return renderEnvelope(session.nonce, found, config.nickname);
         }
@@ -484,7 +469,9 @@ async function call(name, args, session) {
         if (refusal) return refusal;
     }
 
-    if (name === 'send') return await sendText(config, { to: args.to, text: args.text, channel: args.channel, replyTo: args.reply_to });
+    // Normalised once, here, so the name that goes in the header is the same name
+    // that gets signed and the same name the receiver matches against.
+    if (name === 'send') return await sendText(config, { to: recipientNames(args.to).join(' '), text: args.text, channel: args.channel, replyTo: args.reply_to });
 
     if (name === 'send_file') {
         const target = findChannel(config, args.channel);
@@ -492,7 +479,7 @@ async function call(name, args, session) {
         if (!existsSync(args.path)) return `no such file: ${args.path}`;
 
         const result = await postFile(config, {
-            to: args.to,
+            to: recipientNames(args.to).join(' '),
             path: args.path,
             note: args.note,
             target,
@@ -510,15 +497,10 @@ export function serve() {
     const session = { nonce: mintNonce() };
     const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
-    const pollIfElected = async () => {
-        const config = loadConfig();
-        if (!config || !claimsPoll()) return;
-        await pollOnce(config).catch(() => {
-            // A dead network must not kill the server; the next tick retries.
-        });
-    };
-    pollIfElected();
-    setInterval(pollIfElected, POLL_EVERY_MS).unref();
+    // Slack is no longer this process's business. One detached syncer feeds the
+    // local log for every session on the machine, so an MCP server that is busy,
+    // slow, or simply not running stops deciding whether messages arrive at all.
+    ensureSyncer();
     refreshLatest();
 
     createInterface({ input: process.stdin }).on('line', async (line) => {

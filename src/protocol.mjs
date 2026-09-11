@@ -10,6 +10,17 @@ import { randomBytes } from 'node:crypto';
 
 export const METADATA_EVENT = 'agent_wire_message';
 
+// "wms-agents@k5at9v", "@k5at9v" and a bare "k5at9v" all name the same message. The
+// channel half narrows the search when it is there and is simply absent when it is
+// not, because a human copying a handle out of Slack drops it as often as not.
+//
+// Both lookups read a handle through here on purpose. When the log has the message
+// and when only the channel does, the same string has to mean the same thing.
+export function splitHandle(handle) {
+    const [left, right] = String(handle).toLowerCase().split('@');
+    return { channel: right ? left : '', ref: right ?? left };
+}
+
 // Slack splits a message past ~4000 characters, and the tail arrives with no
 // header, so the receiver drops half an answer while the sender is told it was
 // delivered. Anything longer goes as a file instead.
@@ -83,8 +94,28 @@ export const HEADER_WIDTH = 60;
 // would put the marker on exactly the messages it is least sure about.
 const RECIPIENT_MARK = { agent: '@', human: '+' };
 
-export const addressLine = ({ from, to, toKind }) =>
-    `${from} => ${to === 'all' ? 'all' : `${RECIPIENT_MARK[toKind] ?? ''}${to}`}`;
+// "@huso, @sinan", "@huso @sinan" and "huso sinan" are one request. A model writes
+// the list the way it reads in a header, so the markers it copies back are stripped
+// here rather than being treated as part of a name.
+export const recipientNames = (to) => String(to ?? '')
+    .split(/[\s,]+/)
+    .map((name) => name.replace(/^[@*+]/, ''))
+    .filter(Boolean);
+
+// One message can reach an agent and a human at once, so the marker belongs to the
+// name and not to the message: "grkn => @huso +hüseyin". toKind is a single kind
+// when there is a single name and a name-to-kind lookup when there are several; a
+// name of unknown kind is drawn bare, because the marker is a claim about what the
+// recipient is and there is nothing to claim.
+const kindFor = (toKind, name) => (toKind && typeof toKind === 'object' ? toKind[name] : toKind);
+
+export function addressLine({ from, to, toKind }) {
+    const names = recipientNames(to);
+    if (names.length === 0 || names[0] === 'all') return `${from} => all`;
+
+    const drawn = names.map((name) => `${RECIPIENT_MARK[kindFor(toKind, name)] ?? ''}${name}`);
+    return `${from} => ${drawn.join(' ')}`;
+}
 
 // A mark set as ":fire:" is six characters here and one emoji in Slack, so
 // measuring the string overshot the padding by four columns on every line this
@@ -109,7 +140,18 @@ export function formatMessage({ mark, from, to, toKind, text, ref, channel }) {
 // A sender is never marked now, but 0.13.3 marked it with a *, so the pattern
 // still allows one, and the recipient still accepts * for the same reason. Markers
 // are stripped rather than kept: routing reads the signed payload, not this line.
-const HEADER = /^(?:(?<mark>\S+)\s+)?\*?(?<from>[^\s=*]+)\s*=>\s*[@*+]?(?<to>\S+?)(?:\s+(?<refChannel>[a-z0-9][\w.-]*)?@(?<ref>[a-z2-9]{4,12}))?$/;
+// The recipient half is one or more marked names. It is lazy so that the handle at
+// the end still wins the tail: for "@huso @sinan wms-agents@k7m2pq" the shortest
+// `to` that lets the rest match is the two names, not all three tokens.
+//
+// The channel in front of the handle is REQUIRED, and that is load-bearing. While it
+// was optional, a bare "@<ref>" was a valid handle — and "@sinan" is the same shape
+// as "@k7m2pq", six characters from the ref alphabet. So "grkn => @huso @sinan" with
+// no handle parsed as to="huso", ref="sinan" and the last recipient vanished. The two
+// are not distinguishable as strings, so one of them had to lose; every handle this
+// package has written since 0.13 carries its channel, which makes the cost the
+// parsing of 0.12-era bare handles and nothing that is still produced.
+const HEADER = /^(?:(?<mark>\S+)\s+)?\*?(?<from>[^\s=*]+)\s*=>\s*(?<to>[@*+]?\S+(?:\s+[@*+]?\S+)*?)(?:\s+(?<refChannel>[a-z0-9][\w.-]*)@(?<ref>[a-z2-9]{4,12}))?$/;
 
 export function parseMessage(raw) {
     const lines = fromSlackText(String(raw ?? '').replace(/\r\n/g, '\n')).trim().split('\n');
@@ -120,7 +162,9 @@ export function parseMessage(raw) {
     return {
         mark: mark ?? '',
         from,
-        to,
+        // Markers are drawn, never stored. Routing reads the signed payload, and a
+        // header anyone in the channel can type is decoration either way.
+        to: recipientNames(to).join(' '),
         refChannel: refChannel ?? '',
         ref: ref ?? '',
         text: lines.slice(1).join('\n').trim(),
@@ -159,8 +203,12 @@ const CONTINUES = /[a-z0-9_-]/i;
 export function addressee(item, myNickname) {
     if (!myNickname) return 'unknown';
     if (item.kind !== 'human') {
-        if (item.to === myNickname) return 'you';
-        return item.to === 'all' || !item.to ? 'all' : item.to;
+        // Named among several is named. An agent-wire older than the recipient list
+        // compares the whole string to its nickname instead, so it reads a
+        // multi-recipient message as being for somebody else and stays quiet.
+        const named = recipientNames(item.to);
+        if (named.includes(myNickname)) return 'you';
+        return named.length === 0 || named[0] === 'all' ? 'all' : named.join(' ');
     }
 
     const text = String(item.text).toLowerCase();

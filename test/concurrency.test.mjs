@@ -8,7 +8,7 @@ const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 process.env.AGENT_WIRE_HOME = home;
 
 const { mapLimit } = await import('../src/slack.mjs');
-const { pollOnce } = await import('../src/mcp.mjs');
+const { pollOnce } = await import('../src/sync.mjs');
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
 

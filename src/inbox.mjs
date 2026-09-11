@@ -8,6 +8,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 
 import { HOME, derivedFromFile, paths, readJsonCached, scopeId, writeJson } from './config.mjs';
+import { splitHandle } from './protocol.mjs';
 
 // Enough to catch up on a conversation, short enough not to bury the session that
 // asked. A caller that wants the whole log passes its own count.
@@ -161,10 +162,9 @@ export const findByTs = (ts) => readInbox().find((item) => item.ts === ts) ?? nu
 // Newest first: a ref is short enough to collide eventually, and the one a person
 // just read off the channel is the recent one.
 export function findByRef(handle) {
-    const [channel, ref] = String(handle).toLowerCase().split('@');
-    const wanted = ref ?? channel;
+    const { channel, ref } = splitHandle(handle);
     return readInbox()
-        .filter((item) => item.ref === wanted && (!ref || !channel || item.channel === channel))
+        .filter((item) => item.ref === ref && (!channel || item.channel === channel))
         .at(-1) ?? null;
 }
 
