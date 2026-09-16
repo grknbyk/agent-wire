@@ -11,7 +11,7 @@ import { MODES, activeChannels, channelMode, findChannel, isAmbiguous, loadConfi
 import { DEFAULT_COUNT, appendMessages, archive, findByRef, findByTs, markRead, selectMessages } from './inbox.mjs';
 import { FINGERPRINT_CHARS, listPeers, signMessage } from './identity.mjs';
 import { refusalFor } from './manners.mjs';
-import { listMembers, postMessage, slackClient, uploadFile } from './slack.mjs';
+import { listMembers, postMessage, shareFile, slackClient, stageFile } from './slack.mjs';
 import { MAX_HOPS, TEXT_MAX, formatMessage, mintNonce, mintRef, recipientNames, renderEnvelope } from './protocol.mjs';
 import { ensureSyncer, fetchByRef } from './sync.mjs';
 import { refreshLatest, updateNotice } from './version.mjs';
@@ -87,50 +87,98 @@ function handshake() {
     return stale ? `${INSTRUCTIONS}\n\nBEFORE ANYTHING ELSE: ${stale} Tell your user this first.` : INSTRUCTIONS;
 }
 
-const TOOLS = [
+// Newest first, because the right answer to a version this server does not know is
+// its own newest. 2025-11-25 is the last revision of the era that has an initialize
+// handshake at all: 2026-07-28 deleted initialize, notifications/initialized and
+// ping, moved version and capabilities into per-request _meta, and forbade
+// server-to-client requests. That is a different transport wearing a newer number,
+// and the per-session fence nonce handed out at handshake time has nowhere to live
+// in a protocol that says a connection is not a session.
+const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
+
+// Enough to catch up on a long conversation. The ceiling is there because the
+// argument arrives from a model: count 1e9 was answered with a straight face.
+const COUNT_MAX = 200;
+
+// The rule is: answer with the same version when it is supported, otherwise with
+// the latest this server has. Answering 2024-11-05 to everyone, which is what this
+// did, threw away four revisions on clients that asked for them.
+export const agreedVersion = (wanted) => (PROTOCOL_VERSIONS.includes(wanted) ? wanted : PROTOCOL_VERSIONS[0]);
+
+// Leaving these off is not neutral. destructiveHint and openWorldHint both default
+// to TRUE, so an unannotated tool reads to a client as "destroys things, reaches
+// anywhere" — which is how asking this agent its own nickname came to need
+// confirmation.
+//
+// readOnly means "changes nothing a later call could observe". inbox is therefore
+// not read-only: asked for unread, it marks what it hands back as read.
+const READS_LOCALLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const READS_SLACK = { ...READS_LOCALLY, openWorldHint: true };
+const WRITES_TO_SLACK = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+
+// The log is append-only and neither of these deletes from it; both move a marker
+// over messages that stay exactly where they were. Nothing here is destructive.
+const MOVES_A_MARKER = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+
+export const TOOLS = [
     {
         name: 'my_id',
-        description: 'This agent\'s nickname, emoji, key fingerprint and channels.',
+        title: 'Who this agent is on the wire',
+        description: 'This agent\'s own nickname, emoji, key fingerprint and channels, in one line. Not the full picture: use status for the card that also shows each channel\'s mode, who is waiting, and when the last sync ran.',
         inputSchema: { type: 'object', properties: {} },
+        annotations: READS_LOCALLY,
     },
     {
         name: 'status',
+        title: 'Status card',
         description: 'The status card: identity, channels with their modes, who has written, and when the last poll ran. Print what this returns exactly as it arrives, inside a code block. It is a drawn box, so retyping the fields loses it.',
         inputSchema: { type: 'object', properties: {} },
+        annotations: READS_LOCALLY,
     },
     {
         name: 'peers',
-        description: 'Agent names seen in the channels so far, with the key pinned to each.',
+        title: 'Agents seen so far',
+        description: 'Agents that have written in the channels so far, each with the key pinned to it on first sight. Not the channel roster: members asks Slack who is actually in a channel, humans included, while this knows only the names that have signed something.',
         inputSchema: { type: 'object', properties: {} },
+        annotations: READS_LOCALLY,
     },
     {
         name: 'channels',
+        title: 'Channels and their modes',
         description: 'List the channels and what each is set to in THIS session: off (silent), ask (counts only) or read (messages arrive in every prompt). This tool cannot change a mode; "agent-wire <mode> <channel>" does, run from this session\'s directory at the user\'s request.',
         inputSchema: { type: 'object', properties: {} },
+        annotations: READS_LOCALLY,
     },
     {
         name: 'members',
-        description: 'Everyone in one channel, agents and humans alike. Only channels the bot was invited to can be asked about; there is no way to list the workspace.',
+        title: 'Who is in a channel',
+        description: 'Everyone in one channel, agents and humans alike, asked of Slack. Not the same as peers, which lists only the agents that have written and the key pinned to each. Only channels the bot was invited to can be asked about; there is no way to list a workspace.',
         inputSchema: {
             type: 'object',
             properties: { channel: { type: 'string', description: 'channel name. Omit it only while one channel is configured; past that, omitting it is refused rather than guessed' } },
         },
+        annotations: READS_SLACK,
     },
     {
         name: 'inbox',
+        title: 'Read messages',
         description: 'Read received messages, oldest first. Defaults to unread, which marks what it returns as read. Pass state "read", "archived" or "all" to look back without changing anything. Pass ref to fetch the one message a user names by its @handle, whatever its state. A message that carried a file names the downloaded path in its fence header.',
         inputSchema: {
             type: 'object',
             properties: {
-                count: { type: 'integer', description: `how many to show (default ${DEFAULT_COUNT})` },
+                count: { type: 'integer', minimum: 1, maximum: COUNT_MAX, description: `how many to show (default ${DEFAULT_COUNT}, at most ${COUNT_MAX})` },
                 state: { type: 'string', enum: ['unread', 'read', 'archived', 'all'] },
                 channel: { type: 'string', description: 'limit to one channel by name' },
                 ref: { type: 'string', description: 'the @handle printed at the end of a message header, e.g. "@k7m2pq"' },
             },
         },
+        // Not read-only: unread is the default and reading it marks it read. Reaches
+        // Slack only for a handle the local log does not have.
+        annotations: { ...MOVES_A_MARKER, openWorldHint: true },
     },
     {
         name: 'send',
+        title: 'Send a message',
         description: 'Send a message to another agent. Text over 3500 characters is posted as a Markdown file instead, because Slack splits a longer message and the tail arrives unreadable.',
         inputSchema: {
             type: 'object',
@@ -142,10 +190,12 @@ const TOOLS = [
             },
             required: ['to', 'text'],
         },
+        annotations: WRITES_TO_SLACK,
     },
     {
         name: 'send_file',
-        description: 'Send a file (plan, export, archive) to another agent. The receiving agent downloads it and gets a local path, so a Markdown document sent this way arrives readable.',
+        title: 'Send a file',
+        description: 'Send a file (plan, export, archive) to another agent. The receiver downloads it and gets a local path, so a Markdown document sent this way arrives readable. Not needed for long text: send posts anything over 3500 characters as a file by itself.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -157,17 +207,78 @@ const TOOLS = [
             },
             required: ['to', 'path'],
         },
+        annotations: WRITES_TO_SLACK,
     },
     {
         name: 'archive',
+        title: 'Archive messages',
         description: 'Archive messages so the inbox stays short. With no argument it archives everything already read.',
         inputSchema: { type: 'object', properties: { ts: { type: 'string', description: 'archive one message by its ts' } } },
+        // Archiving the same message twice leaves it archived once.
+        annotations: { ...MOVES_A_MARKER, idempotentHint: true },
     },
 ];
 
+// Tool arguments are written by a model, which makes this the boundary, and the
+// boundary is where types are checked. Everything below was answered with a straight
+// face before this existed: `text` as an object reached the signing code and ended
+// the whole server, `count: -5` returned nothing at all, `ts: {}` was told it had
+// archived 0 messages, and `path: {}` reached fs.existsSync, which Node now warns
+// about and will refuse outright.
+//
+// Deliberately not a JSON Schema validator. Types, required, enum and the numeric
+// bounds are what the schemas here actually declare, and a dependency that handles
+// the rest would be carried for cases this server does not have.
+function describe(value) {
+    if (Array.isArray(value)) return 'an array';
+    if (value === null) return 'null';
+
+    const kind = typeof value;
+    return `${'aeiou'.includes(kind[0]) ? 'an' : 'a'} ${kind}`;
+}
+
+export function wrongArgument(tool, args) {
+    const properties = tool.inputSchema?.properties ?? {};
+
+    for (const name of tool.inputSchema?.required ?? []) {
+        if (args[name] === undefined) return `${tool.name}: ${name} is required`;
+    }
+
+    for (const [name, value] of Object.entries(args)) {
+        const declared = properties[name];
+        // An argument the schema never mentioned is ignored rather than refused: a
+        // model adding a field it invented should not lose the message it wrote.
+        if (!declared || value === undefined) continue;
+
+        if (declared.type === 'string' && typeof value !== 'string') return `${tool.name}: ${name} must be a string, got ${describe(value)}`;
+        if (declared.type === 'integer' && !Number.isInteger(value)) return `${tool.name}: ${name} must be a whole number, got ${describe(value)}`;
+        if (declared.enum && !declared.enum.includes(value)) return `${tool.name}: ${name} must be one of ${declared.enum.join(', ')}, got ${JSON.stringify(value)}`;
+        if (declared.minimum !== undefined && value < declared.minimum) return `${tool.name}: ${name} must be at least ${declared.minimum}`;
+        if (declared.maximum !== undefined && value > declared.maximum) return `${tool.name}: ${name} must be at most ${declared.maximum}`;
+    }
+    return null;
+}
+
+// A tool that did its job answers with a string. Anything that did not comes back
+// wrapped in this, and the dispatcher turns it into isError.
+//
+// Without it every refusal arrived looking exactly like a success — "Slack rejected
+// it (channel_not_found)" and "delivered to huso" are the same shape — and the only
+// way to tell them apart was to read the English and hope.
+class Refused {
+    constructor(text) {
+        this.text = text;
+    }
+}
+
+export const refused = (text) => new Refused(text);
+export const wasRefused = (answer) => answer instanceof Refused;
+export const textOf = (answer) => (answer instanceof Refused ? answer.text : String(answer));
+
 // Says which of the two happened, because "no such channel: undefined" reads as a
-// broken tool rather than as a missing argument.
-const noChannel = (config, wanted) => (isAmbiguous(config, wanted)
+// broken tool rather than as a missing argument. Always a refusal, so it is marked
+// here rather than at each of the call sites that pass it straight through.
+const noChannel = (config, wanted) => refused(isAmbiguous(config, wanted)
     ? `name the channel: ${config.channels.map((channel) => channel.name).join(', ')}`
     : `no such channel: ${wanted ?? '(none configured)'}`);
 
@@ -270,7 +381,7 @@ async function sendText(config, { to, text, channel, replyTo }) {
 
     const chain = chainOf(replyTo);
     if (chain.hop > MAX_HOPS) {
-        return `loop guard: this exchange is ${chain.hop} replies deep with no human in it. Summarise for your user instead of answering again.`;
+        return refused(`loop guard: this exchange is ${chain.hop} replies deep with no human in it. Summarise for your user instead of answering again.`);
     }
 
     if (String(text).length > TEXT_MAX) return await sendLongText(config, { to, text, target, chain });
@@ -293,7 +404,7 @@ async function sendText(config, { to, text, channel, replyTo }) {
         conv: chain.conv,
         hop: chain.hop,
     });
-    if (!posted.ok) return `Slack rejected it (${posted.reason})`;
+    if (!posted.ok) return refused(`Slack rejected it (${posted.reason})`);
 
     recordOwnMessage(config, { ts: posted.ts, target, to, text, chain, ref });
     return `delivered to ${to} in #${target.name} as ${target.name}@${ref}`;
@@ -326,7 +437,9 @@ function recordOwnMessage(config, { ts, target, to, text, chain, ref }) {
 // signature cannot be lifted onto somebody else's upload.
 async function postFile(config, { to, path, note, target, chain, logText }) {
     const client = slackClient(config.bot_token);
-    const uploaded = await uploadFile(client, { channel: target.id, path });
+    // The bytes go up without naming a channel, so nothing shows in Slack yet. That
+    // gives the file id the signature needs while leaving the order to us.
+    const uploaded = await stageFile(client, { path });
     if (!uploaded.ok) return { ok: false, message: `Slack rejected the file (${uploaded.reason})` };
 
     const text = note ?? `sent ${uploaded.name}`;
@@ -348,6 +461,13 @@ async function postFile(config, { to, path, note, target, chain, logText }) {
         file: uploaded.fileId,
     });
     if (!posted.ok) return { ok: false, message: `the file went up but the message describing it did not (${posted.reason})` };
+
+    // Only now does the file appear, directly under the line that describes it. The
+    // receiver reads the id out of the message metadata and fetches it with
+    // files.info, so a poll landing in the gap between these two calls would find
+    // the file not shared yet — one HTTP call wide, against a sync a minute apart.
+    const shared = await shareFile(client, { channel: target.id, fileId: uploaded.fileId, name: uploaded.name });
+    if (!shared.ok) return { ok: false, message: `the message posted but the file never appeared under it (${shared.reason})` };
 
     recordOwnMessage(config, { ts: posted.ts, target, to, text: logText ?? text, chain, ref });
     return { ok: true, name: uploaded.name, channelName: target.name, ref };
@@ -375,16 +495,16 @@ async function sendLongText(config, { to, text, target, chain }) {
 
 async function call(name, args, session) {
     const tool = TOOLS.find((candidate) => candidate.name === name);
-    if (!tool) return `unknown tool: ${name}`;
+    if (!tool) return refused(`unknown tool: ${name}`);
 
     const missing = (tool.inputSchema.required ?? []).filter((field) => isBlank(args[field]));
-    if (missing.length) return `missing or empty: ${missing.join(', ')}`;
+    if (missing.length) return refused(`missing or empty: ${missing.join(', ')}`);
 
     const config = loadConfig();
     // Said to an agent, which will pass it on. Naming the terminal matters: setup
     // refuses a pipe, so an agent that tries to run it from a tool gets a bare
     // refusal and tells the user the wrong thing.
-    if (!config) return 'agent-wire is not configured yet. Tell the user to run `agent-wire setup` in a real terminal window — it asks questions, so it will not run from a tool. Install it first with `npm i -g @grknbyk/agent-wire` if the command is missing.';
+    if (!config) return refused('agent-wire is not configured yet. Tell the user to run `agent-wire setup` in a real terminal window — it asks questions, so it will not run from a tool. Install it first with `npm i -g @grknbyk/agent-wire` if the command is missing.');
 
     // The card reaches the user through a tool rather than a shell, because a
     // shell result gets read, understood and then retyped as prose — and the box
@@ -408,7 +528,7 @@ async function call(name, args, session) {
 
     if (name === 'channels') {
         const configured = config.channels ?? [];
-        if (configured.length === 0) return 'no channels configured — invite the bot to one in Slack';
+        if (configured.length === 0) return refused('no channels configured — invite the bot to one in Slack');
         const listed = configured
             .map((channel) => `${channelMode(config, channel).padEnd(4)}  #${channel.name}`)
             .join('\n');
@@ -420,7 +540,7 @@ async function call(name, args, session) {
         if (!target) return noChannel(config, args.channel);
 
         const result = await listMembers(slackClient(config.bot_token), target.id);
-        if (!result.ok) return `Slack said: ${result.reason}`;
+        if (!result.ok) return refused(`Slack said: ${result.reason}`);
 
         return `#${target.name} — ${result.names.length} member(s): ${result.names.join(', ')}`;
     }
@@ -440,9 +560,9 @@ async function call(name, args, session) {
                 const tag = `@${String(args.ref).replace(/^@/, '')}`;
                 // Calling it absent when Slack refused to answer is a claim the user
                 // cannot check, so the two outcomes get different sentences.
-                return sweep?.blocked
+                return refused(sweep?.blocked
                     ? `cannot tell yet whether ${tag} is in the channel: Slack answered \`${sweep.blocked}\` to the sweep, and the local log does not have it. Worth one retry in a minute.`
-                    : `no message with the handle ${tag} — not in this log, and a sweep of the channel did not turn it up either`;
+                    : `no message with the handle ${tag} — not in this log, and a sweep of the channel did not turn it up either`);
             }
             markRead([found]);
             return renderEnvelope(session.nonce, found, config.nickname);
@@ -466,7 +586,7 @@ async function call(name, args, session) {
     // and never reaches the log either. See manners.mjs for what this does not do.
     if (name === 'send' || name === 'send_file') {
         const refusal = refusalFor(`${args.text ?? ''} ${args.note ?? ''}`);
-        if (refusal) return refusal;
+        if (refusal) return refused(refusal);
     }
 
     // Normalised once, here, so the name that goes in the header is the same name
@@ -476,7 +596,7 @@ async function call(name, args, session) {
     if (name === 'send_file') {
         const target = findChannel(config, args.channel);
         if (!target) return noChannel(config, args.channel);
-        if (!existsSync(args.path)) return `no such file: ${args.path}`;
+        if (!existsSync(args.path)) return refused(`no such file: ${args.path}`);
 
         const result = await postFile(config, {
             to: recipientNames(args.to).join(' '),
@@ -485,7 +605,7 @@ async function call(name, args, session) {
             target,
             chain: chainOf(args.reply_to),
         });
-        if (!result.ok) return result.message;
+        if (!result.ok) return refused(result.message);
 
         return `sent ${result.name} to ${args.to} in #${result.channelName} as ${result.channelName}@${result.ref}`;
     }
@@ -513,7 +633,7 @@ export function serve() {
                 jsonrpc: '2.0',
                 id: message.id,
                 result: {
-                    protocolVersion: '2024-11-05',
+                    protocolVersion: agreedVersion(message.params?.protocolVersion),
                     capabilities: { tools: {}, prompts: {} },
                     serverInfo: { name: 'agent-wire', version: VERSION },
                     instructions: handshake(),
@@ -523,7 +643,7 @@ export function serve() {
         if (message.method === 'tools/list') return write({ jsonrpc: '2.0', id: message.id, result: { tools: TOOLS } });
         if (message.method === 'prompts/list') return write({ jsonrpc: '2.0', id: message.id, result: { prompts: PROMPTS } });
         if (message.method === 'prompts/get') {
-            const asked = PROMPTS.find((prompt) => prompt.name === message.params.name);
+            const asked = PROMPTS.find((prompt) => prompt.name === message.params?.name);
             if (!asked) return write({ jsonrpc: '2.0', id: message.id, error: { code: -32602, message: `no prompt named ${message.params.name}` } });
             const answer = asked.name === 'status'
                 ? STATUS_INSTRUCTION
@@ -532,8 +652,30 @@ export function serve() {
         }
         if (message.method === 'ping') return write({ jsonrpc: '2.0', id: message.id, result: {} });
         if (message.method === 'tools/call') {
-            const text = await call(message.params.name, message.params.arguments ?? {}, session);
-            return write({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text }] } });
+            // A throw here used to end the server. `await call(...)` sat outside any
+            // try, so one bad argument became an unhandled rejection and Node ends
+            // the process on those — reproduced, exit 1, and the client saw no reply
+            // at all, only a hang. A dead server is worse than any failed call, and
+            // every other open session on this machine died with it.
+            const asked = TOOLS.find((tool) => tool.name === message.params?.name);
+            const wrong = asked && wrongArgument(asked, message.params.arguments ?? {});
+            if (wrong) return write({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: wrong }], isError: true } });
+
+            try {
+                const answer = await call(message.params.name, message.params.arguments ?? {}, session);
+                const result = { content: [{ type: 'text', text: textOf(answer) }] };
+                if (wasRefused(answer)) result.isError = true;
+                return write({ jsonrpc: '2.0', id: message.id, result });
+            } catch (error) {
+                return write({
+                    jsonrpc: '2.0',
+                    id: message.id,
+                    // isError rather than a JSON-RPC error: the protocol reserves those
+                    // for the call not being made at all. This one was made and it
+                    // failed, which is the model's problem to read and act on.
+                    result: { content: [{ type: 'text', text: `${message.params.name} failed: ${error.message}` }], isError: true },
+                });
+            }
         }
         write({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'method not found' } });
     });

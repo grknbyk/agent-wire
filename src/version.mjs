@@ -2,6 +2,7 @@
 // registry is asked at most once every SILENCE_MS, the answer is cached, and the
 // asking never blocks anything: a failed check leaves the old answer in place and
 // the next one tries again.
+import { exec } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -39,6 +40,43 @@ export function isNewer(candidate, current) {
 // The published version as of the last successful check, or null while none has
 // ever succeeded. Reading never touches the network.
 export const knownLatest = () => readJson(paths.update, {}).version ?? null;
+
+// Printing a sentence was not enough, and three releases with an agent stranded on
+// each one is the evidence: 0.13.7, 0.14.1 and 0.15.0 all shipped while somebody sat
+// on the one before. Nobody reads a notice addressed to nobody, so the install runs
+// itself and the notice becomes the fallback rather than the mechanism.
+//
+// Called from the syncer and nowhere else. That is the one process this machine
+// guarantees exactly one of, so two `npm i -g` runs cannot meet in the same global
+// directory — which is a thing to prevent, not to find out about afterwards.
+const INSTALL_TIMEOUT_MS = 120000;
+
+// npm answers from its own cache and from the tag it already holds: `i -g` came back
+// with the previous version three times in one afternoon, on two machines. Clearing
+// first and naming the version is the difference, and it is the same line the manual
+// `agent-wire update` runs.
+const installLine = (version) => `npm cache clean --force && npm i -g ${PACKAGE_NAME}@${version}`;
+
+export async function selfUpdate() {
+    const latest = await refreshLatest();
+    if (!isNewer(latest, installedVersion())) return null;
+
+    // It goes into a shell line next and it arrived over the network. A version is
+    // three numbers; anything else is not something to hand to a shell.
+    if (!/^\d+\.\d+\.\d+$/.test(latest)) return null;
+
+    // One attempt per published version, or a machine whose npm refuses — no write
+    // permission on the global prefix is the usual reason — reinstalls in a loop
+    // forever. The next registry check is six hours away and clears this, so a
+    // transient failure is retried then, and the printed notice never went away.
+    const seen = readJson(paths.update, {});
+    if (seen.tried === latest) return null;
+    writeJson(paths.update, { ...seen, tried: latest });
+
+    return await new Promise((resolve) => {
+        exec(installLine(latest), { timeout: INSTALL_TIMEOUT_MS, windowsHide: true }, (error) => resolve(error ? null : latest));
+    });
+}
 
 export function updateNotice() {
     const latest = knownLatest();

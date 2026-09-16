@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { loadConfig, paths, pollableChannels } from './config.mjs';
 import { appendMessages, readCursor, writeCursor } from './inbox.mjs';
 import { splitHandle } from './protocol.mjs';
+import { selfUpdate } from './version.mjs';
 import { CHANNEL_CONCURRENCY, mapLimit, pollChannel, slackClient } from './slack.mjs';
 
 // Nothing waits on a sync, so this number only decides how stale the log may be.
@@ -106,7 +107,7 @@ export async function syncLoop() {
     await new Promise((done) => setTimeout(done, LOCK_SETTLE_MS));
     if (lockHolder()[0] !== String(process.pid)) return 'another syncer claimed the lock first';
 
-    setInterval(beat, HEARTBEAT_MS);
+    const heart = setInterval(beat, HEARTBEAT_MS);
 
     // Config is re-read every cycle, so a channel added by setup and a changed
     // sync_seconds are both picked up without a restart.
@@ -116,8 +117,20 @@ export async function syncLoop() {
     // of it, which matters most exactly when Slack is slow.
     let wait = syncEveryMs(config);
 
+    // Turning the MCP on spawns this process, so an update lands a cycle after the
+    // user connects. Every cycle asks, but the registry is only reached every six
+    // hours; the rest of the time this is one comparison against a cached answer.
+    let replaced = null;
+
     const tick = async () => {
         try {
+            // Installing replaces the files this process is running from, and it has
+            // already read them. Standing down is what gets the new code running: the
+            // lock goes cold in thirty seconds and the next prompt spawns a syncer on
+            // the version that was just installed.
+            replaced = await selfUpdate();
+            if (replaced) return;
+
             const fresh = loadConfig() ?? config;
             const { refused } = await pollOnce(fresh).catch((error) => ({ added: 0, refused: error.message }));
             // Offline, rate limited, or one bad channel. Never fatal: a syncer that
@@ -132,12 +145,16 @@ export async function syncLoop() {
             // In `finally` because each tick owns the next one. An interval kept
             // firing whatever happened; a chain that throws before this line is a
             // syncer that heartbeats forever and never syncs again.
-            setTimeout(tick, withJitter(wait));
+            //
+            // Clearing the heartbeat is what lets the process end: nothing else is
+            // holding the loop open, so there is no exit() racing a socket shut.
+            if (replaced) clearInterval(heart);
+            else setTimeout(tick, withJitter(wait));
         }
     };
 
     await tick();
-    return null;
+    return replaced ? `installed ${replaced}; standing down so the next syncer runs it` : null;
 }
 
 // How long a handle is worth chasing. A person pasting one means "this line, here",

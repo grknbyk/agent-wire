@@ -182,7 +182,14 @@ export async function postMessage(client, { channel, rendered, signature, public
 // No initial_comment on purpose. files.completeUploadExternal carries no metadata
 // field, so a file posted with its own comment arrives unsigned and cannot be
 // attributed. The caller posts a signed message naming this file id instead.
-export async function uploadFile(client, { channel, path }) {
+// Sending a file is two halves, and which order they run in is what Slack shows.
+// Uploading names no channel, so nothing is visible yet and the id already exists to
+// sign the message with. Sharing is what puts the file in the channel.
+//
+// Done as one call, the file landed above the line describing it — file first, then
+// "here is what this file is" underneath. Backwards for anyone scanning headers down
+// the left edge, and the user asked for message then file.
+export async function stageFile(client, { path }) {
     const bytes = readFileSync(path);
     const name = basename(path);
     const slot = await client.form('files.getUploadURLExternal', { filename: name, length: bytes.length });
@@ -191,11 +198,15 @@ export async function uploadFile(client, { channel, path }) {
     const upload = await fetch(slot.upload_url, { method: 'POST', body: bytes });
     if (!upload.ok) return { ok: false, reason: `upload_failed_http_${upload.status}` };
 
+    return { ok: true, fileId: slot.file_id, name };
+}
+
+export async function shareFile(client, { channel, fileId, name }) {
     const done = await client.form('files.completeUploadExternal', {
-        files: JSON.stringify([{ id: slot.file_id, title: name }]),
+        files: JSON.stringify([{ id: fileId, title: name }]),
         channel_id: channel,
     });
-    return done.ok ? { ok: true, fileId: slot.file_id, name } : { ok: false, reason: done.error };
+    return done.ok ? { ok: true } : { ok: false, reason: done.error };
 }
 
 // --- receiving files
