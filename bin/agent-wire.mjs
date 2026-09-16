@@ -155,22 +155,19 @@ const packageJson = async () => {
 // Clearing first and naming @latest is the difference, and it is not something
 // anybody should have to remember twice.
 async function update() {
-    const { execSync } = await import('node:child_process');
+    const { installArgs, runNpm } = await import('../src/version.mjs');
     const here = (await packageJson()).version;
-    // One string rather than a command and an array: npm is npm.cmd on Windows,
-    // which needs a shell, and passing an args array through one is deprecated.
-    const run = (line, quiet) => execSync(`npm ${line}`, { encoding: 'utf8', stdio: quiet ? 'pipe' : 'inherit' });
 
-    let latest;
-    try {
-        latest = run(`view ${PACKAGE_NAME} version`, true).trim();
-    } catch {
-        console.log('could not reach the npm registry — check the network, then try again');
+    const viewed = await runNpm(['view', PACKAGE_NAME, 'version']);
+    if (!viewed.ok) {
+        console.log('could not reach the npm registry, or npm is not installed beside this node.');
+        console.log(`npm said: ${viewed.reason}`);
         return 1;
     }
+    const latest = viewed.out;
 
-    // It goes into a shell line next, and it came off the network. A version is
-    // a version; anything else is not something to run.
+    // It becomes an npm argument next, and it came off the network. A version is a
+    // version; anything else is not something to pass on.
     if (!/^[\w.+-]+$/.test(latest)) {
         console.log(`npm answered with something that is not a version: ${JSON.stringify(latest)}`);
         return 1;
@@ -182,10 +179,9 @@ async function update() {
     }
 
     console.log(`${here} installed, ${latest} published. Updating.`);
-    try {
-        run('cache clean --force', true);
-        run(`i -g ${PACKAGE_NAME}@${latest}`);
-    } catch {
+    await runNpm(['cache', 'clean', '--force']);
+    const installed = await runNpm(installArgs(latest));
+    if (!installed.ok) {
         console.log(`\nnpm refused. On macOS that is usually /usr/local owned by root — give npm a`);
         console.log('prefix you own rather than using sudo, which leaves root-owned files behind:');
         console.log('  npm config set prefix ~/.npm-global');

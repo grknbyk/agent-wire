@@ -2,8 +2,8 @@
 // registry is asked at most once every SILENCE_MS, the answer is cached, and the
 // asking never blocks anything: a failed check leaves the old answer in place and
 // the next one tries again.
-import { exec } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -55,14 +55,39 @@ const INSTALL_TIMEOUT_MS = 120000;
 // with the previous version three times in one afternoon, on two machines. Clearing
 // first and naming the version is the difference, and it is the same line the manual
 // `agent-wire update` runs.
-const installLine = (version) => `npm cache clean --force && npm i -g ${PACKAGE_NAME}@${version}`;
+// Running `npm` on Windows runs npm.cmd, which means cmd.exe. A hidden cmd.exe
+// that installs software, launched by a detached background process nobody is
+// watching, is the shape Windows Defender's SuspExec heuristic exists to catch,
+// and it blocked exactly that on one machine here. node is a signed binary and
+// npm ships as a plain script for it, so calling the script skips the shell:
+// no cmd.exe, no && to chain two commands, no window that has to be hidden.
+const NPM_CLI = [
+    ['node_modules', 'npm', 'bin', 'npm-cli.js'],               // Windows, and nvm
+    ['..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'],  // most POSIX installs
+];
+
+export const npmScript = () => NPM_CLI
+    .map((parts) => join(dirname(process.execPath), ...parts))
+    .find((candidate) => existsSync(candidate)) ?? null;
+
+// Resolves either way and never rejects: every caller reads a failed npm as "not
+// updated" rather than as an error worth unwinding the stack for.
+export const runNpm = (args, { timeout = INSTALL_TIMEOUT_MS } = {}) => new Promise((resolve) => {
+    const script = npmScript();
+    if (!script) return resolve({ ok: false, out: '', reason: 'no npm-cli.js next to this node' });
+
+    execFile(process.execPath, [script, ...args], { timeout, encoding: 'utf8' }, (error, out) => {
+        resolve({ ok: !error, out: String(out ?? '').trim(), reason: error?.message ?? null });
+    });
+});
+export const installArgs = (version) => ['install', '-g', `${PACKAGE_NAME}@${version}`];
 
 export async function selfUpdate() {
     const latest = await refreshLatest();
     if (!isNewer(latest, installedVersion())) return null;
 
-    // It goes into a shell line next and it arrived over the network. A version is
-    // three numbers; anything else is not something to hand to a shell.
+    // It becomes an npm argument next and it arrived over the network. A version
+    // is three numbers; anything else is not something to pass on.
     if (!/^\d+\.\d+\.\d+$/.test(latest)) return null;
 
     // One attempt per published version, or a machine whose npm refuses — no write
@@ -73,9 +98,14 @@ export async function selfUpdate() {
     if (seen.tried === latest) return null;
     writeJson(paths.update, { ...seen, tried: latest });
 
-    return await new Promise((resolve) => {
-        exec(installLine(latest), { timeout: INSTALL_TIMEOUT_MS, windowsHide: true }, (error) => resolve(error ? null : latest));
-    });
+    // Two calls rather than one `&&` line, because chaining needs a shell and the
+    // shell is the part worth losing. npm answered from its own cache with the
+    // previous version three times in one afternoon, so the clean still runs first.
+    const cleaned = await runNpm(['cache', 'clean', '--force']);
+    if (!cleaned.ok) return null;
+
+    const installed = await runNpm(installArgs(latest));
+    return installed.ok ? latest : null;
 }
 
 export function updateNotice() {

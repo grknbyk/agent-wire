@@ -8,7 +8,7 @@ const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 process.env.AGENT_WIRE_HOME = home;
 
 const { paths } = await import('../src/config.mjs');
-const { installedVersion, isNewer, knownLatest, updateNotice } = await import('../src/version.mjs');
+const { installArgs, installedVersion, isNewer, knownLatest, npmScript, runNpm, updateNotice } = await import('../src/version.mjs');
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -45,4 +45,26 @@ test('a check that never succeeded says nothing rather than guessing', () => {
 
     assert.equal(knownLatest(), null);
     assert.equal(updateNotice(), null);
+});
+
+test('npm is reached through node, never through a shell', async () => {
+    // The old line was `npm cache clean --force && npm i -g …` handed to exec with
+    // windowsHide. On Windows that is a hidden cmd.exe installing software from a
+    // detached background process, and Defender's SuspExec heuristic blocked one.
+    const script = npmScript();
+    assert.ok(script, 'npm-cli.js was not found next to this node');
+    assert.match(script, /npm-cli\.js$/);
+
+    // A real npm call, so the test fails if the argument shape is wrong rather than
+    // only if the path lookup is.
+    const answered = await runNpm(['--version']);
+    assert.equal(answered.ok, true, `npm refused: ${answered.reason}`);
+    assert.match(answered.out, /^\d+\.\d+\.\d+/);
+});
+
+test('the install is an argument list, so nothing can be chained onto it', () => {
+    // A version arrives off the network. As one string it used to be concatenated
+    // into a shell line; as an array element there is no shell to take a && from it.
+    assert.deepEqual(installArgs('1.2.3'), ['install', '-g', '@grknbyk/agent-wire@1.2.3']);
+    assert.deepEqual(installArgs('9.9.9 && calc'), ['install', '-g', '@grknbyk/agent-wire@9.9.9 && calc']);
 });
