@@ -67,7 +67,7 @@ function ago(milliseconds) {
     return `${Math.round(seconds / 86400)}d ago`;
 }
 
-const lastPoll = () => (existsSync(paths.pollLock) ? ago(Date.now() - statSync(paths.pollLock).mtimeMs) : 'never');
+export const lastPoll = () => (existsSync(paths.pollLock) ? ago(Date.now() - statSync(paths.pollLock).mtimeMs) : 'never');
 
 const PEERS_SHOWN = 9; // three full rows of the three-column layout
 

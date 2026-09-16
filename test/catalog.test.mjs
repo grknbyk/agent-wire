@@ -10,7 +10,7 @@ import { test } from 'node:test';
 
 process.env.AGENT_WIRE_HOME = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 
-const { TOOLS } = await import('../src/mcp.mjs');
+const { TOOLS, listedFor } = await import('../src/mcp.mjs');
 
 test.after(() => rmSync(process.env.AGENT_WIRE_HOME, { recursive: true, force: true }));
 
@@ -87,6 +87,27 @@ test('channels says it cannot change a mode', () => {
     // It is named like a setter and is not one. Modes are prompts, on purpose:
     // nothing a channel message can reach is allowed to silence a channel.
     assert.match(byName('channels').description, /cannot change/i);
+});
+
+test('the channel argument lists the configured channels once there are two', () => {
+    // A model omitted `channel` with two configured, twice, with the description
+    // already telling it not to. A list it can read is worth more than a sentence.
+    const two = listedFor({ channels: [{ name: 'wms-agents' }, { name: 'ops' }] });
+    const named = two.filter((tool) => tool.inputSchema?.properties?.channel);
+    assert.ok(named.length >= 4, 'several tools take a channel and all of them should list it');
+    for (const tool of named) {
+        assert.deepEqual(tool.inputSchema.properties.channel.enum, ['wms-agents', 'ops'], `${tool.name} does not name the channels`);
+        assert.ok(tool.inputSchema.properties.channel.description, `${tool.name} lost its description`);
+    }
+});
+
+test('one channel is not worth a list, and no config is not a crash', () => {
+    // With one configured, omitting the argument is correct, so an enum of one
+    // would only add noise. Setup has not run yet the first time a client lists.
+    const [alone] = [{ channels: [{ name: 'wms-agents' }] }, undefined, {}, { channels: [] }]
+        .map((config) => listedFor(config))
+        .filter((tools) => tools !== TOOLS);
+    assert.equal(alone, undefined, 'nothing under two channels should rewrite the catalogue');
 });
 
 test('tools are listed in a stable order', () => {

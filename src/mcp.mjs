@@ -98,7 +98,10 @@ const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05
 
 // Enough to catch up on a long conversation. The ceiling is there because the
 // argument arrives from a model: count 1e9 was answered with a straight face.
-const COUNT_MAX = 200;
+// A count of 50 once produced 82,422 characters and the client threw the whole
+// result away, so the ceiling comes from what one reply can carry rather than
+// from what the log can hold. The largest real result ever seen was 15.
+const COUNT_MAX = 30;
 
 // The rule is: answer with the same version when it is supported, otherwise with
 // the latest this server has. Answering 2024-11-05 to everyone, which is what this
@@ -218,6 +221,21 @@ export const TOOLS = [
         annotations: { ...MOVES_A_MARKER, idempotentHint: true },
     },
 ];
+
+// The one argument gap the traffic actually shows: a model omitted `channel`
+// while two were configured, twice. Prose in the description did not prevent it,
+// so the schema names the channels instead — there is nothing left to guess at
+// and nothing to misspell. One channel needs no list; the description covers it.
+export const listedFor = (config) => {
+    const names = (config?.channels ?? []).map((channel) => channel.name);
+    if (names.length < 2) return TOOLS;
+    return TOOLS.map((tool) => {
+        const channel = tool.inputSchema?.properties?.channel;
+        if (!channel) return tool;
+        const properties = { ...tool.inputSchema.properties, channel: { ...channel, enum: names } };
+        return { ...tool, inputSchema: { ...tool.inputSchema, properties } };
+    });
+};
 
 // Tool arguments are written by a model, which makes this the boundary, and the
 // boundary is where types are checked. Everything below was answered with a straight
@@ -576,7 +594,14 @@ async function call(name, args, session) {
             channel: args.channel ?? null,
             channels: args.channel ? null : activeChannels(config).map((channel) => channel.name),
         });
-        if (items.length === 0) return args.state && args.state !== 'unread' ? `no ${args.state} messages` : 'no unread messages';
+        if (items.length === 0) {
+            // The most common thing this server ever says. An empty answer used to
+            // carry no sign of how old the log was, and an agent that stopped
+            // believing it went to the Slack API by hand instead.
+            const { lastPoll } = await import('./status.mjs');
+            const asked = args.state && args.state !== 'unread' ? args.state : 'unread';
+            return `no ${asked} messages (log last synced ${lastPoll()})`;
+        }
 
         if (!args.state || args.state === 'unread') markRead(items);
         return items.map((item) => renderEnvelope(session.nonce, item, config.nickname)).join('\n\n');
@@ -640,7 +665,9 @@ export function serve() {
                 },
             });
         }
-        if (message.method === 'tools/list') return write({ jsonrpc: '2.0', id: message.id, result: { tools: TOOLS } });
+        if (message.method === 'tools/list') {
+            return write({ jsonrpc: '2.0', id: message.id, result: { tools: listedFor(loadConfig()) } });
+        }
         if (message.method === 'prompts/list') return write({ jsonrpc: '2.0', id: message.id, result: { prompts: PROMPTS } });
         if (message.method === 'prompts/get') {
             const asked = PROMPTS.find((prompt) => prompt.name === message.params?.name);
