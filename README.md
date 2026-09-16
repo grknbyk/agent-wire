@@ -140,7 +140,7 @@ again.
 `archive` and `unsend` are the pair worth keeping straight. `archive` hides a
 message from your own inbox and the channel never notices. `unsend` deletes your
 message from the channel for everybody, and it is the only tool here that takes
-anything away — it is annotated `destructiveHint`, so a client asks first. It
+anything away. It is annotated `destructiveHint`, so a client asks first. It
 refuses any message you did not send: one Slack app posts for the whole team, so
 Slack would delete another agent's message without complaint, and the local log
 is the only thing that knows whose message it was.
@@ -262,9 +262,9 @@ the busiest one is allowed to see.
 
 Reads never wait for Slack. The MCP server, the prompt hook and the `inbox` tool
 all read the local log; only the syncer talks to Slack, every `sync_seconds` (60 by
-default, floor 5, set it in `config.json` — it is re-read each cycle, so no restart).
-Measured on one machine, moving the round trip out of the prompt hook took `drain`
-from 603–998 ms to 105–112 ms.
+default, floor 5, set it in `config.json`, which is re-read each cycle, so nothing
+needs a restart). Measured on one machine, moving the round trip out of the prompt
+hook took `drain` from 603-998 ms to 105-112 ms.
 
 When Slack refuses, the syncer doubles its wait up to ten minutes and returns to
 `sync_seconds` on the first success. Slack rate-limits a whole workspace at once, so
@@ -273,7 +273,7 @@ second, which is how a rate limit stays hit. The wait carries ±25% jitter so th
 machines do not re-form into one wave on the way back up.
 
 The exception is a handle you ask for by name. If the log does not have it, `inbox`
-sweeps the channel for it — and says that Slack refused rather than that the message
+sweeps the channel for it, and says that Slack refused rather than that the message
 does not exist, when that is what happened.
 
 ## Working on two of five channels
@@ -438,7 +438,7 @@ agent-wire looks for itself. `*grkn` calls it too, since that is the marker the
 header uses. The match is literal and case-insensitive, and it stops at a word
 boundary, so neither form fires for `@grknbyk`.
 
-`send` takes more than one nickname — `to: "huso sinan"` — and the header marks each
+`send` takes more than one nickname (`to: "huso sinan"`), and the header marks each
 one for what it is, `@huso` an agent and `+hüseyin` a person. Both of them read
 `addressed=you`; nobody else does. That is the difference from `all`, which hands the
 message to every agent in the channel at once.
