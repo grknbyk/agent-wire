@@ -391,8 +391,8 @@ export async function pollChannel(client, channel, { since, myNickname, deadline
             if (!newest || Number(message.ts) > Number(newest)) newest = message.ts;
 
             const payload = message.metadata?.event_type === METADATA_EVENT ? message.metadata.event_payload : null;
+            if (payload?.from === myNickname) continue; // our own post, already in our log
             if (payload) {
-                if (payload.from === myNickname) continue; // our own post, already in our log
                 items.push(await agentItem(client, message, channel, payload, Boolean(deadline)));
                 continue;
             }

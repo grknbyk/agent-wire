@@ -6,7 +6,7 @@ import { existsSync, statSync } from 'node:fs';
 import { channelMode, loadConfig, paths, readJson } from './config.mjs';
 import { hookState } from './hook.mjs';
 import { updateNotice } from './version.mjs';
-import { displayWidth } from './protocol.mjs';
+import { RECIPIENT_MARK, displayWidth } from './protocol.mjs';
 import { readInbox, stateOf } from './inbox.mjs';
 
 // Filled, half, hollow: how much of the channel reaches this session, readable
@@ -106,12 +106,14 @@ function unreadByChannel() {
     return counts;
 }
 
-// The panel has room for a symbol, not a word. `*` and `@` are the two marks a
-// reader already associates with a machine and a person, and `!` is the one that
-// stops the eye. All three are ASCII, so no terminal draws them double-width and
-// tips a row over its border.
-// The same two the header uses: @ calls an agent, + is a person.
-const peerMark = (peer) => (peer.everForged ? '!' : peer.kind === 'human' ? '+' : '@');
+// The panel has room for a symbol, not a word. A forged key has to stop the eye,
+// so it outranks the kind mark; the other two are the ones the header already
+// uses. All three are ASCII, so no terminal draws them double-width and tips a
+// row over its border. `kind` is written in three places and is only ever
+// 'agent' or 'human', so the lookup is total.
+const FORGED_MARK = '!';
+
+const peerMark = (peer) => (peer.everForged ? FORGED_MARK : RECIPIENT_MARK[peer.kind]);
 
 export function renderStatus(config) {
     const counts = unreadByChannel();

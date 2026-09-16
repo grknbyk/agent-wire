@@ -235,33 +235,46 @@ function notConfigured() {
     return 1;
 }
 
-const name = process.argv[2];
-
 // The exit code is set, never forced. Calling process.exit() while an undici
 // socket from a Slack call is still closing aborts libuv on Windows, and doctor
 // hit that on every run. Nothing here holds the event loop open, so letting Node
 // finish by itself costs about a millisecond.
 //
-// serve() is the one command that must not exit at all: the open stdin stream is
-// what keeps the MCP server alive.
-if (name === 'serve') {
-    (await import('../src/mcp.mjs')).serve();
-} else if (name === 'sync') {
-    // Declining is an ordinary outcome — usually "one is already running" — so it
-    // says why and exits 0. Only a missing install is a failure worth a code.
-    const declined = await (await import('../src/sync.mjs')).syncLoop();
-    if (declined) {
+// A function rather than a chain at module scope, because every branch here ends
+// the work and `return` is what says so. At module scope there is no return, and
+// the same five cases have to be written as `else if`.
+async function run(name) {
+    // serve() is the one command that must not exit at all: the open stdin stream
+    // is what keeps the MCP server alive. It is called, not awaited.
+    if (name === 'serve') {
+        (await import('../src/mcp.mjs')).serve();
+        return;
+    }
+
+    if (name === 'sync') {
+        // Declining is an ordinary outcome — usually "one is already running" — so it
+        // says why and exits 0. Only a missing install is a failure worth a code.
+        const declined = await (await import('../src/sync.mjs')).syncLoop();
+        if (!declined) return;
         console.log(declined);
         process.exitCode = declined.startsWith('not set up') ? 1 : 0;
+        return;
     }
-} else if (commands[name]) {
-    process.exitCode = await commands[name]() ?? 0;
-} else if (!name) {
+
+    if (commands[name]) {
+        process.exitCode = await commands[name]() ?? 0;
+        return;
+    }
+
+    if (name) {
+        console.log(USAGE);
+        process.exitCode = 1;
+        return;
+    }
+
     // Bare invocation shows where you stand once there is something to stand on,
     // and the usage text while there is not.
-    const shown = await showStatus();
-    if (shown === null) console.log(USAGE);
-} else {
-    console.log(USAGE);
-    process.exitCode = 1;
+    if (await showStatus() === null) console.log(USAGE);
 }
+
+await run(process.argv[2]);

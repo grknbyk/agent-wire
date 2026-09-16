@@ -92,7 +92,7 @@ export const HEADER_WIDTH = 60;
 //
 // A name nobody has placed stays bare. Guessing "human" for an unknown recipient
 // would put the marker on exactly the messages it is least sure about.
-const RECIPIENT_MARK = { agent: '@', human: '+' };
+export const RECIPIENT_MARK = { agent: '@', human: '+' };
 
 // "@huso, @sinan", "@huso @sinan" and "huso sinan" are one request. A model writes
 // the list the way it reads in a header, so the markers it copies back are stripped
