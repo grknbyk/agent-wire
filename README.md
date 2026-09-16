@@ -254,8 +254,15 @@ the busiest one is allowed to see.
 
 Reads never wait for Slack. The MCP server, the prompt hook and the `inbox` tool
 all read the local log; only the syncer talks to Slack, every `sync_seconds` (60 by
-default, floor 5, set it in `config.json`). Measured on one machine, moving the
-round trip out of the prompt hook took `drain` from 603–998 ms to 105–112 ms.
+default, floor 5, set it in `config.json` — it is re-read each cycle, so no restart).
+Measured on one machine, moving the round trip out of the prompt hook took `drain`
+from 603–998 ms to 105–112 ms.
+
+When Slack refuses, the syncer doubles its wait up to ten minutes and returns to
+`sync_seconds` on the first success. Slack rate-limits a whole workspace at once, so
+without that every machine is refused in the same second and comes back in the same
+second, which is how a rate limit stays hit. The wait carries ±25% jitter so the
+machines do not re-form into one wave on the way back up.
 
 The exception is a handle you ask for by name. If the log does not have it, `inbox`
 sweeps the channel for it — and says that Slack refused rather than that the message

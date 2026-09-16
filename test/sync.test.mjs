@@ -8,7 +8,7 @@ const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 process.env.AGENT_WIRE_HOME = home;
 
 const { paths } = await import('../src/config.mjs');
-const { syncEveryMs, syncerIsLive } = await import('../src/sync.mjs');
+const { nextDelay, syncEveryMs, syncerIsLive } = await import('../src/sync.mjs');
 
 test.after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -57,4 +57,34 @@ test('a beating lock is a live syncer and a cold one is not', () => {
 test('a lock written by a crashed syncer does not keep the log starved forever', () => {
     heldAt(Date.now() - 600000);
     assert.equal(syncerIsLive(), false, 'a ten-minute-old lock must not look alive');
+});
+
+const MINUTE = 60000;
+
+test('a refusal doubles the wait and a success ends it', () => {
+    // Nothing wrong: stay on the configured cadence.
+    assert.equal(nextDelay({ previous: MINUTE, base: MINUTE, refused: null }), MINUTE);
+
+    // Turned away: come back half as often, then half again.
+    assert.equal(nextDelay({ previous: MINUTE, base: MINUTE, refused: 'ratelimited' }), 2 * MINUTE);
+    assert.equal(nextDelay({ previous: 2 * MINUTE, base: MINUTE, refused: 'ratelimited' }), 4 * MINUTE);
+
+    // The backoff is for the outage, not a punishment that outlives it.
+    assert.equal(nextDelay({ previous: 8 * MINUTE, base: MINUTE, refused: null }), MINUTE);
+});
+
+test('the wait stops doubling at ten minutes', () => {
+    assert.equal(nextDelay({ previous: 8 * MINUTE, base: MINUTE, refused: 'ratelimited' }), 10 * MINUTE);
+    assert.equal(nextDelay({ previous: 10 * MINUTE, base: MINUTE, refused: 'ratelimited' }), 10 * MINUTE);
+
+    // A workspace that is down for an hour must still be found within ten minutes
+    // of coming back, or the channel looks dead long after Slack is fine.
+    assert.ok(nextDelay({ previous: 10 * MINUTE, base: MINUTE, refused: 'timeout' }) <= 10 * MINUTE);
+});
+
+test('raising sync_seconds mid-backoff is honoured, not undercut', () => {
+    // config.json changed to a five-minute cadence while the wait was still at one.
+    // Doubling from the old, smaller wait would poll faster than the config now asks.
+    assert.equal(nextDelay({ previous: MINUTE, base: 5 * MINUTE, refused: 'ratelimited' }), 10 * MINUTE);
+    assert.equal(nextDelay({ previous: MINUTE, base: 5 * MINUTE, refused: null }), 5 * MINUTE);
 });

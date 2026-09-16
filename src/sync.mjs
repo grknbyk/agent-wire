@@ -44,14 +44,34 @@ export async function pollOnce(config, { budgetMs = null } = {}) {
             .catch((error) => ({ ok: false, reason: error.message, items: [] })));
 
     let added = 0;
+    let refused = null;
     for (const [index, result] of polled.entries()) {
-        if (!result.ok) continue;
+        if (!result.ok) {
+            // Reported rather than swallowed. The syncer decides how fast to come
+            // back, and it cannot decide that without knowing it was turned away.
+            refused ??= result.reason ?? 'unknown';
+            continue;
+        }
 
         added += appendMessages(result.items);
         if (result.newest) writeCursor(channels[index].id, result.newest);
     }
-    return added;
+    return { added, refused };
 }
+
+// Slack refuses a whole workspace at once, so every machine's syncer is turned away
+// in the same second and, on a fixed interval, comes back in the same second too —
+// which is how a rate limit stays hit. Doubling on refusal thins the traffic, and
+// the jitter stops the fleet re-forming into one synchronised wave on the way back
+// up. Success returns to base immediately: the backoff is for the outage, not a
+// punishment that outlives it.
+const BACKOFF_MAX_MS = 10 * 60 * 1000;
+const JITTER = 0.25;
+
+export const nextDelay = ({ previous, base, refused }) =>
+    (refused ? Math.min(Math.max(previous, base) * 2, BACKOFF_MAX_MS) : base);
+
+const withJitter = (ms) => Math.round(ms * (1 + ((Math.random() * 2) - 1) * JITTER));
 
 // poll.lock is the heartbeat, and it ticks far faster than a sync cycle so that a
 // crashed syncer is noticed in seconds rather than in one sync_seconds. The pid in
@@ -88,15 +108,35 @@ export async function syncLoop() {
 
     setInterval(beat, HEARTBEAT_MS);
 
-    // Config is re-read every cycle, so a channel added by setup is picked up with
-    // no restart. sync_seconds is the exception: the interval below is already
-    // ticking by then, so changing that one needs the syncer restarted.
-    const tick = () => pollOnce(loadConfig() ?? config).catch(() => {
-        // Offline, rate limited, or one bad channel. The next cycle retries. A
-        // syncer that exits on a bad network is a syncer nobody can rely on.
-    });
+    // Config is re-read every cycle, so a channel added by setup and a changed
+    // sync_seconds are both picked up without a restart.
+    //
+    // Each tick schedules the next one instead of an interval firing regardless.
+    // A tick that runs long then delays its successor rather than stacking on top
+    // of it, which matters most exactly when Slack is slow.
+    let wait = syncEveryMs(config);
+
+    const tick = async () => {
+        try {
+            const fresh = loadConfig() ?? config;
+            const { refused } = await pollOnce(fresh).catch((error) => ({ added: 0, refused: error.message }));
+            // Offline, rate limited, or one bad channel. Never fatal: a syncer that
+            // exits on a bad network is a syncer nobody can rely on.
+            wait = nextDelay({ previous: wait, base: syncEveryMs(fresh), refused });
+        } catch (error) {
+            // Something outside the poll threw — a half-written config.json is the
+            // realistic one. Treated as a refusal so the retry slows down instead of
+            // spinning on the same broken file.
+            wait = nextDelay({ previous: wait, base: wait, refused: error.message });
+        } finally {
+            // In `finally` because each tick owns the next one. An interval kept
+            // firing whatever happened; a chain that throws before this line is a
+            // syncer that heartbeats forever and never syncs again.
+            setTimeout(tick, withJitter(wait));
+        }
+    };
+
     await tick();
-    setInterval(tick, syncEveryMs(config));
     return null;
 }
 

@@ -93,6 +93,6 @@ test('one failing channel does not cost the other channels their messages', asyn
     });
 
     // Nothing throws out of pollOnce even though every user lookup would.
-    assert.equal(await pollOnce((await import('../src/config.mjs')).loadConfig()), 0);
+    assert.equal((await pollOnce((await import('../src/config.mjs')).loadConfig())).added, 0);
     globalThis.fetch = realFetch;
 });
