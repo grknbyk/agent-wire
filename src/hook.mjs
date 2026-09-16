@@ -8,9 +8,33 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const EVENT = 'UserPromptSubmit';
-export const HOOK_COMMAND = 'agent-wire drain';
+
+// `agent-wire drain` reached the CLI through the npm shim, and the shim is not
+// free: 318 ms per turn measured against 131 ms for the same work called
+// directly, so 187 ms of wrapper was being paid on every single prompt. Naming
+// node and the script skips it. The price is an absolute path that a change of
+// npm prefix can invalidate, which is what `broken` below exists to catch — a
+// hook that fails is a channel that goes quiet without saying why.
+const cliPath = () => join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-wire.mjs');
+
+export const hookCommand = () => `"${process.execPath}" "${cliPath()}" drain`;
+
+// Quoted or bare, the script is the one token ending in agent-wire.mjs. The
+// legacy shim command names no script, and that form still works.
+const scriptIn = (command) => command.match(/[^"'\s]*agent-wire\.mjs/)?.[0] ?? null;
+
+const isOurs = (hook) => {
+    const command = String(hook.command ?? '');
+    return command.includes('agent-wire') && command.includes('drain');
+};
+
+const drainCommands = (settings) => (settings.hooks?.[EVENT] ?? [])
+    .flatMap((entry) => entry.hooks ?? [])
+    .filter(isOurs)
+    .map((hook) => String(hook.command ?? ''));
 
 // Overridable so a test never reaches for the real one. Nothing else sets it.
 export const settingsPath = () =>
@@ -25,19 +49,26 @@ const readSettings = (path) => {
     }
 };
 
-// 'installed' | 'missing' | 'unreadable' | 'no-client'
+// 'installed' | 'broken' | 'missing' | 'unreadable' | 'no-client'
 export function hookState(path = settingsPath()) {
     const settings = readSettings(path);
     if (settings === null) return 'no-client';
     if (settings === undefined) return 'unreadable';
 
-    const entries = settings.hooks?.[EVENT] ?? [];
-    const commands = entries.flatMap((entry) => entry.hooks ?? []).map((hook) => String(hook.command ?? ''));
-    return commands.some((command) => command.includes('agent-wire') && command.includes('drain')) ? 'installed' : 'missing';
+    const commands = drainCommands(settings);
+    if (commands.length === 0) return 'missing';
+
+    // One surviving command still delivers, so the state is broken only when
+    // every one of them points at a file that is not there any more.
+    const working = commands.filter((command) => {
+        const script = scriptIn(command);
+        return !script || existsSync(script);
+    });
+    return working.length > 0 ? 'installed' : 'broken';
 }
 
 export const hookSnippet = () => JSON.stringify(
-    { hooks: { [EVENT]: [{ hooks: [{ type: 'command', command: HOOK_COMMAND }] }] } },
+    { hooks: { [EVENT]: [{ hooks: [{ type: 'command', command: hookCommand() }] }] } },
     null,
     2,
 );
@@ -50,7 +81,15 @@ export function installHook(path = settingsPath()) {
 
     const merged = settings ?? {};
     const hooks = merged.hooks ?? {};
-    hooks[EVENT] = [...(hooks[EVENT] ?? []), { hooks: [{ type: 'command', command: HOOK_COMMAND }] }];
+
+    // Ours come out before ours goes in. Appending blindly is how a machine ends
+    // up running drain twice per prompt: once through the old shim command and
+    // once through the new one, the second delivering nothing because the first
+    // already marked everything read.
+    const theirs = (hooks[EVENT] ?? [])
+        .map((entry) => ({ ...entry, hooks: (entry.hooks ?? []).filter((hook) => !isOurs(hook)) }))
+        .filter((entry) => entry.hooks.length > 0);
+    hooks[EVENT] = [...theirs, { hooks: [{ type: 'command', command: hookCommand() }] }];
     merged.hooks = hooks;
 
     mkdirSync(dirname(path), { recursive: true });

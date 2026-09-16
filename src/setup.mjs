@@ -35,6 +35,7 @@ const explain = (reason) => EXPLANATIONS[reason] ?? `Slack said: ${reason}`;
 const DELIVERY_REPORT = {
     installed: 'delivery   ok, the prompt hook is installed',
     missing: 'delivery   MISSING — read and ask deliver nothing without the prompt hook',
+    broken: 'delivery   BROKEN — the prompt hook names a file that is gone, so nothing is delivering',
     unreadable: 'delivery   UNKNOWN — the client settings file is not valid JSON, so the hook cannot be checked',
     'no-client': 'delivery   no Claude Code settings here; another client needs its own hook, and the inbox tool works either way',
 };
@@ -244,8 +245,8 @@ export async function runDoctor() {
 
     const delivery = hookState();
     console.log(DELIVERY_REPORT[delivery]);
-    if (delivery === 'missing') {
-        console.log(`\nAdd this to ${settingsPath()}, or re-run setup:\n${hookSnippet()}`);
+    if (delivery === 'missing' || delivery === 'broken') {
+        console.log(`\nPut this in ${settingsPath()}, or re-run setup:\n${hookSnippet()}`);
         return 1;
     }
     return 0;

@@ -157,8 +157,10 @@ export function renderStatus(config) {
     // 5 unread" while nothing delivers is the panel saying the thing works when it
     // has not said a word, so the box tells on itself.
     const listening = (config.channels ?? []).filter((channel) => channelMode(config, channel) !== 'off');
-    const warning = listening.length > 0 && hookState() !== 'installed'
-        ? `\n  nothing is delivering: no prompt hook. \`agent-wire doctor\` prints the fix.`
+    const delivery = hookState();
+    const gone = delivery === 'broken' ? 'the prompt hook names a file that is gone' : 'no prompt hook';
+    const warning = listening.length > 0 && delivery !== 'installed'
+        ? `\n  nothing is delivering: ${gone}. \`agent-wire doctor\` prints the fix.`
         : '';
 
     const stale = updateNotice();

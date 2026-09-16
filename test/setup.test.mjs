@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -84,10 +84,77 @@ test('doctor names the missing step when setup was quit halfway', async () => {
 // prompt hook that nothing installed, audited, or admitted was missing.
 test('setup installs the prompt hook that read and ask are delivered by', async () => {
     const { hookState } = await import('../src/hook.mjs');
-    const written = JSON.parse((await import('node:fs')).readFileSync(process.env.AGENT_WIRE_CLIENT_SETTINGS, 'utf8'));
+    const written = JSON.parse(readFileSync(process.env.AGENT_WIRE_CLIENT_SETTINGS, 'utf8'));
 
     assert.equal(hookState(), 'installed');
-    assert.match(JSON.stringify(written.hooks.UserPromptSubmit), /agent-wire drain/);
+    // node and the script by name, not `agent-wire drain`: the npm shim in front of
+    // that spelling cost 187 ms of every turn and did nothing else.
+    const [entry] = written.hooks.UserPromptSubmit;
+    assert.match(entry.hooks[0].command, /agent-wire\.mjs" drain$/);
+    assert.match(entry.hooks[0].command, /node/i);
+});
+
+test('a hook naming a file that is gone is broken, not installed', async () => {
+    // The price of skipping the shim is an absolute path, and a path can stop being
+    // true. A hook that fails silently is a channel that goes quiet without saying
+    // why, so the state has a name and `doctor` fails on it.
+    const { hookState } = await import('../src/hook.mjs');
+    const settings = process.env.AGENT_WIRE_CLIENT_SETTINGS;
+    const installed = readFileSync(settings, 'utf8');
+
+    writeFileSync(settings, JSON.stringify({
+        hooks: {
+            UserPromptSubmit: [{ hooks: [{ type: 'command', command: '"node" "/gone/bin/agent-wire.mjs" drain' }] }],
+        },
+    }));
+    assert.equal(hookState(), 'broken');
+    assert.equal(await quietly(runDoctor), 1);
+
+    writeFileSync(settings, installed);
+    assert.equal(hookState(), 'installed');
+});
+
+test('the legacy shim command still counts as installed', async () => {
+    // Someone upgrading has `agent-wire drain` in their settings. It names no script,
+    // so there is no path to check and nothing to call broken — it works, it is just
+    // slower, and telling them it is broken would be a lie.
+    const { hookState } = await import('../src/hook.mjs');
+    const settings = process.env.AGENT_WIRE_CLIENT_SETTINGS;
+    const installed = readFileSync(settings, 'utf8');
+
+    writeFileSync(settings, JSON.stringify({
+        hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'agent-wire drain' }] }] },
+    }));
+    assert.equal(hookState(), 'installed');
+
+    writeFileSync(settings, installed);
+});
+
+test('installing twice leaves one drain hook, and never touches anyone else\'s', async () => {
+    // Appending blindly is how a machine ends up draining twice per prompt, the
+    // second call delivering nothing because the first marked everything read.
+    const { hookState, installHook } = await import('../src/hook.mjs');
+    const settings = process.env.AGENT_WIRE_CLIENT_SETTINGS;
+    const installed = readFileSync(settings, 'utf8');
+
+    writeFileSync(settings, JSON.stringify({
+        hooks: {
+            UserPromptSubmit: [
+                { hooks: [{ type: 'command', command: 'agent-wire drain' }] },
+                { hooks: [{ type: 'command', command: 'somebody-elses-tool --watch' }] },
+            ],
+        },
+    }));
+    installHook();
+    installHook();
+
+    const written = JSON.parse(readFileSync(settings, 'utf8'));
+    const commands = written.hooks.UserPromptSubmit.flatMap((entry) => entry.hooks).map((hook) => hook.command);
+    assert.equal(commands.filter((command) => command.includes('drain')).length, 1, 'drain must be installed once');
+    assert.ok(commands.includes('somebody-elses-tool --watch'), 'another tool\'s hook was dropped');
+    assert.equal(hookState(), 'installed');
+
+    writeFileSync(settings, installed);
 });
 
 test('doctor fails, rather than reassures, when nothing delivers', async () => {
