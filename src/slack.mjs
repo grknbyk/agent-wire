@@ -155,6 +155,14 @@ export async function listMembers(client, channelId) {
     return { ok: true, names: await resolveUserNames(client, result.members) };
 }
 
+// The bot token deletes as the bot, so Slack will not stop it from taking back a
+// message another agent posted through the same app. Whose message it is, is a
+// question only the local log can answer, and mcp.mjs asks it before calling here.
+export async function deleteMessage(client, { channel, ts }) {
+    const result = await client.form('chat.delete', { channel, ts });
+    return result.ok ? { ok: true } : { ok: false, reason: result.error };
+}
+
 // --- sending
 
 // `rendered` is the whole visible message — header line plus body — because that

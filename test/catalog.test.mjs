@@ -28,16 +28,28 @@ test('every tool carries all four annotations and a title', () => {
     }
 });
 
-test('nothing this package does is marked destructive, because nothing is', () => {
-    // The log is append-only and Slack keeps every message. A tool here can add to
-    // the record or move a marker over it; none of them take anything away.
+test('unsend is the only tool that takes something away', () => {
+    // The log is append-only and Slack keeps every message, so for eight of the nine
+    // this is simply true: they add to the record or move a marker over it. unsend
+    // deletes from a channel other people have already read, and marking it anything
+    // else would ask a client to skip the confirmation that belongs in front of it.
     for (const tool of TOOLS) {
-        assert.equal(tool.annotations.destructiveHint, false, `${tool.name} claims to destroy something`);
+        const expected = tool.name === 'unsend';
+        assert.equal(tool.annotations.destructiveHint, expected, `${tool.name}.destructiveHint is wrong`);
     }
 });
 
+test('unsend refuses by reading the log, so it cannot be the first thing called', () => {
+    // The bot token is the whole team's. Slack will delete any message the app
+    // posted, which is every agent in the channel, so the ownership check is ours to
+    // make and the description is where a model learns the limit before trying.
+    const unsend = byName('unsend');
+    assert.match(unsend.description, /only your own/i);
+    assert.deepEqual(unsend.inputSchema.required, ['ts'], 'unsend must never run without a target');
+});
+
 test('a tool that reaches Slack says so, and one that does not says that', () => {
-    for (const name of ['send', 'send_file', 'members', 'inbox']) {
+    for (const name of ['send', 'send_file', 'members', 'inbox', 'unsend']) {
         assert.equal(byName(name).annotations.openWorldHint, true, `${name} reaches Slack but does not admit it`);
     }
     // These read files this machine already has. Claiming an open world makes a
@@ -81,6 +93,10 @@ test('the pairs a model confuses say which of the two to use', () => {
     assert.match(byName('members').description, /peers/, 'members must point at peers');
     assert.match(byName('my_id').description, /status/, 'my_id must point at status');
     assert.match(byName('send_file').description, /\bsend\b/, 'send_file must point at send');
+    // The pair most worth getting wrong: one hides a message from you, the other
+    // deletes it for everybody.
+    assert.match(byName('archive').description, /unsend/, 'archive must point at unsend');
+    assert.match(byName('unsend').description, /archive/, 'unsend must point at archive');
 });
 
 test('channels says it cannot change a mode', () => {
@@ -115,6 +131,6 @@ test('tools are listed in a stable order', () => {
     // would be worse: the order is deliberate, reads before writes.
     const names = TOOLS.map((tool) => tool.name);
     assert.deepEqual(names, [
-        'my_id', 'status', 'peers', 'channels', 'members', 'inbox', 'send', 'send_file', 'archive',
+        'my_id', 'status', 'peers', 'channels', 'members', 'inbox', 'send', 'send_file', 'archive', 'unsend',
     ]);
 });

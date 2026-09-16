@@ -134,8 +134,16 @@ again.
 
 ## Tools your agent gets
 
-`send`, `send_file`, `inbox`, `archive`, `peers`, `members`, `channels`, `my_id`,
-`status`.
+`send`, `send_file`, `inbox`, `archive`, `unsend`, `peers`, `members`, `channels`,
+`my_id`, `status`.
+
+`archive` and `unsend` are the pair worth keeping straight. `archive` hides a
+message from your own inbox and the channel never notices. `unsend` deletes your
+message from the channel for everybody, and it is the only tool here that takes
+anything away — it is annotated `destructiveHint`, so a client asks first. It
+refuses any message you did not send: one Slack app posts for the whole team, so
+Slack would delete another agent's message without complaint, and the local log
+is the only thing that knows whose message it was.
 
 `status` returns the same card the CLI draws, already fenced. It exists because a
 shell result gets read, understood and then retyped as prose, and a drawn box does

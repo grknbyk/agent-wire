@@ -11,7 +11,7 @@ import { MODES, activeChannels, channelMode, findChannel, isAmbiguous, loadConfi
 import { DEFAULT_COUNT, appendMessages, archive, findByRef, findByTs, markRead, selectMessages } from './inbox.mjs';
 import { FINGERPRINT_CHARS, listPeers, signMessage } from './identity.mjs';
 import { refusalFor } from './manners.mjs';
-import { listMembers, postMessage, shareFile, slackClient, stageFile } from './slack.mjs';
+import { deleteMessage, listMembers, postMessage, shareFile, slackClient, stageFile } from './slack.mjs';
 import { MAX_HOPS, TEXT_MAX, formatMessage, mintNonce, mintRef, recipientNames, renderEnvelope } from './protocol.mjs';
 import { ensureSyncer, fetchByRef } from './sync.mjs';
 import { refreshLatest, updateNotice } from './version.mjs';
@@ -123,6 +123,12 @@ const WRITES_TO_SLACK = { readOnlyHint: false, destructiveHint: false, idempoten
 // over messages that stay exactly where they were. Nothing here is destructive.
 const MOVES_A_MARKER = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 
+// The only one. Everything else here adds to a record or moves a marker over it;
+// this takes a message out of a channel other people have already read, and no
+// undo exists on either side. idempotent because a second call finds it gone and
+// says so rather than failing.
+const TAKES_SOMETHING_BACK = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true };
+
 export const TOOLS = [
     {
         name: 'my_id',
@@ -215,10 +221,23 @@ export const TOOLS = [
     {
         name: 'archive',
         title: 'Archive messages',
-        description: 'Archive messages so the inbox stays short. With no argument it archives everything already read.',
+        description: 'Archive messages so the inbox stays short. With no argument it archives everything already read. This hides a message from your own inbox and changes nothing in the channel — unsend is the one that deletes.',
         inputSchema: { type: 'object', properties: { ts: { type: 'string', description: 'archive one message by its ts' } } },
         // Archiving the same message twice leaves it archived once.
         annotations: { ...MOVES_A_MARKER, idempotentHint: true },
+    },
+    {
+        name: 'unsend',
+        title: 'Unsend a message you posted',
+        description: 'Delete one of your own messages from the channel. Only your own: a message from another agent or a person is refused, because the shared bot token would otherwise let you delete theirs. Everyone who already read it has read it. Use archive to hide a message from your own inbox without touching the channel.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                ts: { type: 'string', description: 'the ts of the message to delete, as shown by inbox' },
+            },
+            required: ['ts'],
+        },
+        annotations: TAKES_SOMETHING_BACK,
     },
 ];
 
@@ -636,6 +655,27 @@ async function call(name, args, session) {
     }
 
     if (name === 'archive') return `archived ${archive(args.ts)} message(s)`;
+
+    if (name === 'unsend') {
+        // The log is the only thing that knows whose message this is. Slack checks
+        // that the app posted it, and the whole team posts through one app, so its
+        // answer is yes for every agent in the channel.
+        const mine = findByTs(args.ts);
+        if (!mine) return refused(`no message with ts ${args.ts} in this log, so there is no way to tell whose it is`);
+        if (mine.from !== config.nickname) {
+            return refused(`${args.ts} was sent by ${mine.from}, not you — unsend only takes back your own messages`);
+        }
+
+        const gone = await deleteMessage(slackClient(config.bot_token), { channel: mine.channelId, ts: args.ts });
+        if (!gone.ok && gone.reason !== 'message_not_found') return refused(`Slack said: ${gone.reason}`);
+
+        // The local record stays. It is append-only, and a log that quietly loses
+        // the line is a log nobody can reconstruct a conversation from.
+        archive(args.ts);
+        return gone.ok
+            ? `unsent ${args.ts} from #${mine.channel}. Anyone who already read it has read it.`
+            : `${args.ts} was already gone from #${mine.channel}; archived it here too.`;
+    }
 }
 
 export function serve() {
