@@ -96,3 +96,40 @@ test('one failing channel does not cost the other channels their messages', asyn
     assert.equal((await pollOnce((await import('../src/config.mjs')).loadConfig())).added, 0);
     globalThis.fetch = realFetch;
 });
+
+// Four processes, each marking 200 different messages read. Before the lock this
+// kept 226 of 800 on this machine, and on Windows it threw EPERM as well, because
+// renaming onto a file another process holds open is refused there.
+test('a message marked read in one process is not lost by another', async () => {
+    const { spawn } = await import('node:child_process');
+    const { mkdtempSync, readFileSync: read, rmSync: remove, writeFileSync } = await import('node:fs');
+    const { pathToFileURL } = await import('node:url');
+
+    const PROCESSES = 4;
+    const COUNT = 200;
+    const racing = mkdtempSync(join(tmpdir(), 'agent-wire-race-'));
+
+    // A worker file rather than --eval: an inline script that spawns processes is
+    // the shape Windows Defender's SuspExec heuristic blocks, and a blocked worker
+    // would look exactly like the bug this test is here to catch.
+    const workerFile = join(racing, 'worker.mjs');
+    writeFileSync(workerFile, [
+        `import { markRead } from ${JSON.stringify(pathToFileURL(join(process.cwd(), 'src', 'inbox.mjs')).href)};`,
+        `for (let index = 0; index < ${COUNT}; index++) {`,
+        '    markRead([{ channel: \'c\', ts: `${process.argv[2]}.${index}` }]);',
+        '}',
+    ].join('\n'));
+
+    const codes = await Promise.all(Array.from({ length: PROCESSES }, (unused, id) => new Promise((done) => {
+        spawn(process.execPath, [workerFile, String(id)], {
+            env: { ...process.env, AGENT_WIRE_HOME: racing, AGENT_WIRE_SCOPE: 'race' },
+            stdio: 'ignore',
+        }).on('exit', done);
+    })));
+
+    const kept = Object.keys(JSON.parse(read(join(racing, 'states.json'), 'utf8'))).length;
+    remove(racing, { recursive: true, force: true });
+
+    assert.deepEqual(codes, Array(PROCESSES).fill(0), 'a worker crashed, which is the EPERM the lock removes');
+    assert.equal(kept, PROCESSES * COUNT, `${PROCESSES * COUNT - kept} marks were lost to a concurrent write`);
+});

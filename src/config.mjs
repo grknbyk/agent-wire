@@ -1,6 +1,6 @@
 // Everything agent-wire stores lives in one directory so a broken install can be
 // inspected, backed up, or deleted as a unit.
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -89,17 +89,85 @@ export function writeJson(file, value) {
     parsedByFile.set(file, { stamp: stampOf(file), value });
 }
 
+
+// Every file here is written by several processes at once: one MCP server per
+// session, the syncer, the prompt hook on every prompt, and the CLI. writeJson
+// is atomic by itself, temp file then rename, but read-change-write is not, and
+// the losing writer's change simply vanished. Four processes marking 200
+// messages read each kept 226 of 800. On Windows it is worse than silent:
+// renaming onto a file another process holds open throws EPERM, so markRead
+// threw, and a send that had already reached Slack came back as a failure.
+const LOCK_TIMEOUT_MS = 1000;
+const LOCK_STALE_MS = 2000;
+const LOCK_RETRY_MS = 5;
+
+// Everything on this path is synchronous and Node has no sleep. Atomics.wait on
+// a buffer nobody ever wakes is the one way to pause without an event loop turn.
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+const lockIsStale = (lockFile) => {
+    try {
+        return Date.now() - statSync(lockFile).mtimeMs > LOCK_STALE_MS;
+    } catch {
+        return false; // it was released between the failed open and this check
+    }
+};
+
+// A lock file beside the data, created with 'wx' so the create either wins or
+// fails. A holder killed mid-write would otherwise block the file forever, so a
+// lock older than LOCK_STALE_MS is taken from it; the critical section is one
+// parse and one write, measured in milliseconds.
+export function withLock(file, work) {
+    mkdirSync(HOME, { recursive: true });
+    const lockFile = `${file}.lock`;
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+
+    let held = null;
+    while (held === null) {
+        try {
+            held = openSync(lockFile, 'wx');
+        } catch (error) {
+            // Windows answers EPERM, not EEXIST, when the target exists and another
+            // process holds it open, and again while a delete is still pending. Both
+            // mean the same thing here: somebody else has it, come back.
+            if (error.code !== 'EEXIST' && error.code !== 'EPERM') throw error;
+            if (lockIsStale(lockFile)) {
+                rmSync(lockFile, { force: true });
+                continue;
+            }
+            // Failing out loud beats writing over somebody else's change. A hook
+            // that prints an error is a hook the user can do something about.
+            if (Date.now() > deadline) {
+                throw new Error(`agent-wire: ${lockFile} was held by another process for over ${LOCK_TIMEOUT_MS}ms`);
+            }
+            pause(LOCK_RETRY_MS);
+        }
+    }
+
+    try {
+        return work();
+    } finally {
+        closeSync(held);
+        rmSync(lockFile, { force: true });
+    }
+}
+
+// Read fresh, change, write, all inside the lock. The read must not come from
+// the cache: its stamp is mtimeMs:size, so two writes of the same size inside
+// one millisecond would hand back the value this process already had.
+export const updateJson = (file, fallback, mutate) => withLock(file, () => {
+    const value = mutate(readJson(file, fallback));
+    writeJson(file, value);
+    return value;
+});
+
 export const loadConfig = () => readJson(paths.config, null);
 
 export const saveConfig = (config) => writeJson(paths.config, config);
 
 // Setup writes after every completed step, so the config IS the resume state and
 // there is no second progress file to disagree with it.
-export function patchConfig(patch) {
-    const merged = { ...(loadConfig() ?? { version: 1 }), ...patch };
-    saveConfig(merged);
-    return merged;
-}
+export const patchConfig = (patch) => updateJson(paths.config, { version: 1 }, (config) => ({ ...config, ...patch }));
 
 export const defaultChannel = (config) => config.channels?.[0] ?? null;
 
@@ -189,8 +257,8 @@ export function pollableChannels(config) {
 // later session in that directory start on read. That is the surprise this
 // reverts. A folder default is still settable, by running the command in a plain
 // terminal, where the scope IS the folder.
-export function setChannelMode(name, mode) {
-    const config = loadConfig();
+export const setChannelMode = (name, mode) => withLock(paths.config, () => {
+    const config = readJson(paths.config, null);
     if (!config) return null;
 
     const channel = findChannel(config, name);
@@ -198,11 +266,19 @@ export function setChannelMode(name, mode) {
 
     const previous = channelMode(config, channel);
     const scopes = config.scopes ?? {};
-    scopes[scopeId()] = { ...scopes[scopeId()], [channel.name]: mode };
+    const mine = scopeId();
+
+    // Deleted and reassigned rather than updated in place, so the key moves to
+    // the end. prunedScopes drops session keys in insertion order, and a
+    // long-lived session whose mode had just changed was going first.
+    const chosen = { ...scopes[mine], [channel.name]: mode };
+    delete scopes[mine];
+    scopes[mine] = chosen;
+
     config.scopes = prunedScopes(scopes);
-    saveConfig(config);
+    writeJson(paths.config, config);
     return { channel, previous };
-}
+});
 
 // One key per session id, and session ids are minted faster than they are ever
 // reused. Folder entries are the ones worth keeping, so only session keys are

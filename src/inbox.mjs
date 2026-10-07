@@ -7,7 +7,7 @@
 // append-only log never has to be rewritten in place.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 
-import { HOME, derivedFromFile, paths, readJsonCached, scopeId, writeJson } from './config.mjs';
+import { HOME, derivedFromFile, paths, readJson, readJsonCached, scopeId, updateJson, withLock, writeJson } from './config.mjs';
 import { splitHandle } from './protocol.mjs';
 
 // Enough to catch up on a conversation, short enough not to bury the session that
@@ -49,16 +49,21 @@ export const stateOf = (states, item) =>
 // The Slack timestamp is the idempotency key: a retried poll, an overlapping
 // window, or a re-installed app all replay the same ts, and a duplicate the human
 // has to clean up by hand is the failure that generates support noise.
+// Under the lock, because the check and the append are two steps. A handle
+// sweep and the syncer can reach the same message at the same moment, and both
+// would see it missing and both would write it.
 export function appendMessages(items) {
     if (items.length === 0) return 0;
 
-    const seen = inboxKeys();
-    const fresh = items.filter((item) => !seen.has(logKey(item)));
-    if (fresh.length === 0) return 0;
+    return withLock(paths.inbox, () => {
+        const seen = inboxKeys();
+        const fresh = items.filter((item) => !seen.has(logKey(item)));
+        if (fresh.length === 0) return 0;
 
-    mkdirSync(HOME, { recursive: true });
-    appendFileSync(paths.inbox, fresh.map((item) => JSON.stringify(item)).join('\n') + '\n');
-    return fresh.length;
+        mkdirSync(HOME, { recursive: true });
+        appendFileSync(paths.inbox, fresh.map((item) => JSON.stringify(item)).join('\n') + '\n');
+        return fresh.length;
+    });
 }
 
 // `channel` names one channel explicitly and overrides everything. `channels`
@@ -141,21 +146,22 @@ function prunedStates(states) {
     return states;
 }
 
-export function markRead(items) {
-    const states = readJsonCached(paths.states, {});
+export const markRead = (items) => updateJson(paths.states, {}, (states) => {
     for (const item of items) states[storageKey(item)] = 'read';
-    writeJson(paths.states, prunedStates(states));
-}
+    return prunedStates(states);
+});
 
-export function archive(ts) {
-    const states = readJsonCached(paths.states, {});
+// withLock rather than updateJson, because the answer is how many were
+// archived, not the map that was written.
+export const archive = (ts) => withLock(paths.states, () => {
+    const states = readJson(paths.states, {});
     const targets = ts
         ? readInbox().filter((item) => item.ts === ts)
         : readInbox().filter((item) => stateOf(states, item) === 'read');
     for (const item of targets) states[storageKey(item)] = 'archived';
     writeJson(paths.states, prunedStates(states));
     return targets.length;
-}
+});
 
 export const findByTs = (ts) => readInbox().find((item) => item.ts === ts) ?? null;
 
@@ -170,8 +176,7 @@ export function findByRef(handle) {
 
 export const readCursor = (channelId) => readJsonCached(paths.cursors, {})[channelId] ?? null;
 
-export function writeCursor(channelId, ts) {
-    const cursors = readJsonCached(paths.cursors, {});
+export const writeCursor = (channelId, ts) => updateJson(paths.cursors, {}, (cursors) => {
     cursors[channelId] = ts;
-    writeJson(paths.cursors, cursors);
-}
+    return cursors;
+});

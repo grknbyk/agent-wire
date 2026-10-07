@@ -7,7 +7,7 @@
 // nickname with a different key is reported, not believed.
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from 'node:crypto';
 
-import { paths, readJsonCached, writeJson } from './config.mjs';
+import { paths, readJson, readJsonCached, updateJson, withLock, writeJson } from './config.mjs';
 
 // A public key is 44 base64 characters. The prefix is what a human compares out
 // loud when two agents disagree about who somebody is, so it is one decision and
@@ -81,21 +81,26 @@ export function checkAuthorship({ from, publicKey, signature, ...fields }) {
     if (!publicKey || !signature) return { verdict: 'unsigned' };
     if (!verifySignature(publicKey, signature, { from, ...fields })) return { verdict: 'unsigned' };
 
-    const peers = loadPeers();
-    const pinned = peers[from];
-    if (pinned && pinned.publicKey !== publicKey) return { verdict: 'impostor', pinnedSince: pinned.firstSeen };
-    if (pinned) return { verdict: 'signed' };
+    // Under the lock, and read fresh inside it. A pin another process wrote a
+    // moment ago must not be lost to this one's older copy: losing a pin means
+    // the next message under that name pins again, which is how a forged key
+    // gets accepted as new.
+    return withLock(paths.peers, () => {
+        const peers = readJson(paths.peers, {});
+        const pinned = peers[from];
+        if (pinned && pinned.publicKey !== publicKey) return { verdict: 'impostor', pinnedSince: pinned.firstSeen };
+        if (pinned) return { verdict: 'signed' };
 
-    peers[from] = { publicKey, firstSeen: new Date().toISOString() };
-    writeJson(paths.peers, peers);
-    return { verdict: 'new' };
+        peers[from] = { publicKey, firstSeen: new Date().toISOString() };
+        writeJson(paths.peers, peers);
+        return { verdict: 'new' };
+    });
 }
 
-export const forgetPeer = (name) => {
-    const peers = loadPeers();
+export const forgetPeer = (name) => updateJson(paths.peers, {}, (peers) => {
     delete peers[name];
-    writeJson(paths.peers, peers);
-};
+    return peers;
+});
 
 export const listPeers = () => Object.entries(loadPeers())
     .map(([name, peer]) => ({ name, firstSeen: peer.firstSeen, fingerprint: peer.publicKey.slice(0, FINGERPRINT_CHARS) }));
