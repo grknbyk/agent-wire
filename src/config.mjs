@@ -1,7 +1,7 @@
 // Everything agent-wire stores lives in one directory so a broken install can be
 // inspected, backed up, or deleted as a unit.
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, uptime } from 'node:os';
 import { join } from 'node:path';
 
 export const HOME = process.env.AGENT_WIRE_HOME || join(homedir(), '.agent-wire');
@@ -98,68 +98,82 @@ export function writeJson(file, value) {
 // renaming onto a file another process holds open throws EPERM, so markRead
 // threw, and a send that had already reached Slack came back as a failure.
 //
-// The wait has to outlast LOCK_STALE_MS. The other way round, a caller arriving
-// while an abandoned lock was still young gave up before it was ever allowed to
-// reclaim it, so every holder killed mid-section turned into a hard error for
-// the next one. It is the pid that decides whether a holder is alive, though, so
-// staleness only has to cover the moment before the pid is written, and the wait
-// can stay short: it is spent inside Atomics.wait on the prompt hook's path, and
-// an MCP client gives up on a server that stops answering.
+// The wait has to outlast the longest section anybody legitimately holds, not
+// the staleness window. archive() with no ts reads all of inbox.jsonl and
+// rewrites a states map of thousands of keys, which this file's own measurement
+// puts in seconds on a large log, and a waiter that gives up before that throws
+// out of appendMessages after the message has already reached Slack. That is
+// the failure at the top of this comment, arriving by a different road. Ten
+// seconds is also the ceiling on how long pause() blocks the event loop, which
+// is the price of the guarantee.
+//
+// LOCK_REUSED_MS is the last resort, and it is deliberately far longer than any
+// section: it can only be reached by a holder wedged for ten minutes, which
+// means suspended or stopped under a debugger rather than working.
 const LOCK_STALE_MS = 1000;
-const LOCK_REUSED_MS = 60000;
-const LOCK_TIMEOUT_MS = 3000;
+const LOCK_REUSED_MS = 600000;
+const LOCK_TIMEOUT_MS = 10000;
 const LOCK_RETRY_MS = 5;
+
+// Which files this process holds right now. withLock is synchronous end to end,
+// so a second call for a file already held could only come from a work()
+// callback, and that is a bug worth hearing about: the inner call would reclaim
+// the outer's lock, both frames would run inside the section, and the inner
+// release would hand the lock away while the outer still believed it held it.
+const heldHere = new Set();
+let acquisitions = 0;
 
 // Everything on this path is synchronous and Node has no sleep. Atomics.wait on
 // a buffer nobody ever wakes is the one way to pause without an event loop turn.
-// LOCK_TIMEOUT_MS is therefore also the ceiling on how long this blocks the
-// event loop, which is why it is read out loud here: inside the syncer it is
-// spent against the same budget as the Slack fetches.
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-// Age alone cannot tell a dead holder from a slow one, and archive() with no ts
-// reads the whole of inbox.jsonl and rewrites a states map of thousands of keys,
-// so a loaded machine really can sit in the section for seconds. Robbing a live
-// holder puts two writers inside it, which is the lost update this file exists
-// to stop. The pid answers that question: ESRCH means gone, and EPERM means
-// alive under another user.
+// Whether the lock in front of us is abandoned. Getting this wrong in either
+// direction costs something: say gone of a live holder and two writers run the
+// same read-change-write, which is the lost update this file exists to stop; say
+// held of a dead one and the file is locked out for good.
 //
-// A pid is not proof on its own, though, and the two ways it lies both end in a
-// file no caller can ever lock again, so each gets an answer below.
+// Age cannot be the answer on its own. The mtime is stamped once, when the lock
+// is taken, so it measures how long the section has been running and not how
+// long ago the holder died.
 const holderIsGone = (lockFile) => {
     let pid;
-    let age;
+    let mtimeMs;
     try {
         pid = Number.parseInt(readFileSync(lockFile, 'utf8'), 10);
-        age = Date.now() - statSync(lockFile).mtimeMs;
+        mtimeMs = statSync(lockFile).mtimeMs;
     } catch {
         return false; // released between the failed open and this read
     }
+    const age = Date.now() - mtimeMs;
 
-    // withLock is synchronous from end to end, so a lock holding this process's
-    // own pid cannot be a live holder: it is our own leftover, from a release
-    // whose delete failed. kill answers that we are alive, which is true and
-    // useless, and the process would then wait out the timeout and throw on
-    // every later use of that file for the rest of its life.
-    if (pid === process.pid) return true;
+    // Our own pid can only be our own leftover, from a release whose delete
+    // failed, because withLock is synchronous and re-entry throws before it gets
+    // here. kill would answer that we are alive, which is true and useless, and
+    // the process would then throw on every later use of that file for as long
+    // as it ran.
+    if (pid === process.pid) return !heldHere.has(lockFile);
 
-    // Empty, because we caught the holder between the create and the pid write.
+    // Empty, because we caught the holder between the create and the stamp.
     if (Number.isNaN(pid)) return age > LOCK_STALE_MS;
 
-    // A pid outlives the process that owned it, and the lock file outlives the
-    // machine. After a crash and a reboot the number belongs to somebody else:
-    // Windows hands low pids out again quickly, and kill answers EPERM for a
-    // process owned by SYSTEM, which reads as alive here too. Nothing would ever
-    // reclaim the file again. No critical section lasts a minute, so a lock this
-    // old is holding a reused pid, whatever kill says about it.
-    if (age > LOCK_REUSED_MS) return true;
+    // A lock written before this boot cannot be held by anything now running,
+    // whatever its pid says. The file outlives the machine, and after a restart
+    // the number in it belongs to somebody unrelated: Windows hands low pids out
+    // again quickly, and kill answers EPERM rather than ESRCH for a process
+    // owned by another user, so both of those read as alive. This is the one test
+    // here with no false positive in it, which is why it comes before kill.
+    if (mtimeMs < Date.now() - uptime() * 1000) return true;
 
     try {
         process.kill(pid, 0);
-        return false;
     } catch (error) {
         return error.code === 'ESRCH';
     }
+
+    // Alive, as far as kill can tell. Within one boot a pid can still be reused
+    // by something unrelated, and nothing above catches that, so a lock held far
+    // longer than any real section is taken anyway.
+    return age > LOCK_REUSED_MS;
 };
 
 // Renaming is the only way to take an abandoned lock without two processes
@@ -169,8 +183,12 @@ const holderIsGone = (lockFile) => {
 // lock overlapped on 2 of 25 rounds. Exactly one rename can win, and only the
 // winner may delete. On Windows the rename also fails while the holder still has
 // the file open, which is the answer we want anyway.
-const reclaim = (lockFile) => {
-    const grave = `${lockFile}.${process.pid}.dead`;
+const reclaim = (lockFile, stamp) => {
+    // A name of its own for every attempt. Sharing one per process meant that a
+    // grave we failed to delete sat in the way of our own next reclaim, because
+    // renaming onto a file that will not go away fails too, and that one process
+    // could then never take that lock again.
+    const grave = `${lockFile}.${stamp.split(' ')[1]}.dead`;
     try {
         renameSync(lockFile, grave);
     } catch {
@@ -181,7 +199,7 @@ const reclaim = (lockFile) => {
     // has already won.
     try {
         rmSync(grave, { force: true });
-    } catch { /* left behind, reclaimed by name on the next pass */ }
+    } catch { /* litter, under a name nothing else will ask for */ }
     return true;
 };
 
@@ -191,6 +209,11 @@ const reclaim = (lockFile) => {
 export function withLock(file, work) {
     mkdirSync(HOME, { recursive: true });
     const lockFile = `${file}.lock`;
+    if (heldHere.has(lockFile)) throw new Error(`agent-wire: withLock re-entered for ${lockFile}`);
+
+    // What this acquisition writes into the lock, and the only thing the release
+    // will delete. The pid comes first because holderIsGone reads it back.
+    const stamp = `${process.pid} ${++acquisitions}-${Date.now().toString(36)}`;
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
 
     let held = null;
@@ -204,7 +227,7 @@ export function withLock(file, work) {
             if (error.code !== 'EEXIST' && error.code !== 'EPERM') throw error;
             // Losing the reclaim is not an error: it means another waiter took the
             // abandoned lock, so wait for that one the same as any other holder.
-            if (holderIsGone(lockFile) && reclaim(lockFile)) continue;
+            if (holderIsGone(lockFile) && reclaim(lockFile, stamp)) continue;
             // Failing out loud beats writing over somebody else's change. A hook
             // that prints an error is a hook the user can do something about.
             if (Date.now() > deadline) {
@@ -214,10 +237,12 @@ export function withLock(file, work) {
         }
     }
 
+    heldHere.add(lockFile);
     try {
-        writeFileSync(held, String(process.pid));
+        writeFileSync(held, stamp);
         return work();
     } finally {
+        heldHere.delete(lockFile);
         // Releasing must not be able to fail work that already happened. A
         // markRead that rewrote states.json, or an appendMessages after the
         // message reached Slack, has to return what it did. Two separate
@@ -227,8 +252,12 @@ export function withLock(file, work) {
             closeSync(held);
         } catch { /* the delete below is what actually matters */ }
         try {
-            rmSync(lockFile, { force: true });
-        } catch { /* holderIsGone reads our own pid as gone, so we can retake it */ }
+            // Our own lock, and nobody else's. A holder declared gone while it
+            // was still working deleted the file by path, and by then the file
+            // was the lock of the process that had taken it, so a third one got
+            // in while the second was still writing.
+            if (readFileSync(lockFile, 'utf8') === stamp) rmSync(lockFile, { force: true });
+        } catch { /* already gone, or unreadable; the reclaim path handles it */ }
     }
 }
 

@@ -186,7 +186,7 @@ test('a lock old enough that its pid has been reused is taken anyway', async () 
     const target = join(home, 'reused-pid.json');
     const lockFile = `${target}.lock`;
     writeFileSync(lockFile, String(process.ppid)); // alive, and not ours
-    const longAgo = new Date(Date.now() - 120000);
+    const longAgo = new Date(Date.now() - 660000);
     utimesSync(lockFile, longAgo, longAgo);
 
     assert.equal(withLock(target, () => 'reclaimed'), 'reclaimed');
@@ -223,11 +223,16 @@ test('two processes racing one abandoned lock do not both get inside it', async 
         '});',
     ].join('\n'));
 
-    const dead = String(await exitedPid());
     let overlaps = 0;
     for (let round = 0; round < ROUNDS; round++) {
         writeFileSync(logFile, '');
-        writeFileSync(lockFile, dead); // abandoned, so all four race the reclaim at once
+        // Abandoned, so all four race the reclaim at once. An empty lock backdated
+        // past the staleness window rather than a planted pid: the racers are node
+        // processes drawing from the same pid pool, and one of them being handed
+        // the planted number would leave the lock looking held by somebody alive.
+        writeFileSync(lockFile, '');
+        const longEnoughAgo = new Date(Date.now() - 5000);
+        utimesSync(lockFile, longEnoughAgo, longEnoughAgo);
         const codes = await Promise.all(Array.from({ length: RACERS }, () => new Promise((done) => {
             spawn(process.execPath, [workerFile], { stdio: 'ignore' }).on('exit', done);
         })));
@@ -252,4 +257,54 @@ test('two processes racing one abandoned lock do not both get inside it', async 
     }
 
     assert.equal(overlaps, 0, `${overlaps} sections overlapped, so two processes held the lock together`);
+});
+
+// Releasing by path alone was its own hazard. A holder declared gone while it
+// was still inside the section deleted whatever stood at that path, and by then
+// the path held the lock of the process that had taken it, so the release let a
+// third one in while the second was still writing.
+test('a holder that lost its lock does not delete the next one', async () => {
+    const { withLock } = await import('../src/config.mjs');
+    const target = join(home, 'robbed.json');
+    const lockFile = `${target}.lock`;
+
+    withLock(target, () => {
+        // Somebody decided we were dead, took the lock, and is inside it now.
+        rmSync(lockFile, { force: true });
+        writeFileSync(lockFile, '424242 someone-else');
+    });
+
+    assert.equal(readFileSync(lockFile, 'utf8'), '424242 someone-else');
+    rmSync(lockFile, { force: true });
+});
+
+// Reading our own pid as a dead holder is only safe while nothing in this
+// process can be holding the lock already, so re-entry has to be the loud kind
+// of mistake. Silently, the inner call would take the outer's lock, both frames
+// would run inside the section, and the inner release would hand it away.
+test('withLock refuses to be re-entered for the same file', async () => {
+    const { withLock } = await import('../src/config.mjs');
+    const target = join(home, 're-entry.json');
+
+    assert.throws(
+        () => withLock(target, () => withLock(target, () => 'inner')),
+        /re-entered/,
+    );
+    // The outer frame still released, so the next caller is not locked out.
+    assert.equal(withLock(target, () => 'free'), 'free');
+});
+
+// The other direction of the same question, and the one that costs data: a lock
+// taken a moment ago by a process that is still running must not be taken away,
+// whatever its age or its pid would suggest on their own. Failing out loud here
+// is the correct answer, and the ten seconds are LOCK_TIMEOUT_MS going by.
+test('a fresh lock held by a live process is waited for, not taken', async () => {
+    const { withLock } = await import('../src/config.mjs');
+    const target = join(home, 'live-holder.json');
+    const lockFile = `${target}.lock`;
+    writeFileSync(lockFile, `${process.ppid} not-ours`); // alive, and not this process
+
+    assert.throws(() => withLock(target, () => 'ROBBED A LIVE HOLDER'), /held by another process/);
+    assert.equal(readFileSync(lockFile, 'utf8'), `${process.ppid} not-ours`, 'the lock was overwritten');
+    rmSync(lockFile, { force: true });
 });
