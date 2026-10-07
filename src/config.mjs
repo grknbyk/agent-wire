@@ -98,12 +98,16 @@ export function writeJson(file, value) {
 // renaming onto a file another process holds open throws EPERM, so markRead
 // threw, and a send that had already reached Slack came back as a failure.
 //
-// The wait has to outlast the staleness check. The other way round, a caller
-// arriving while an abandoned lock was still young gave up before it was ever
-// allowed to reclaim it, so every holder killed mid-section turned into a hard
-// error for the next one.
-const LOCK_STALE_MS = 5000;
-const LOCK_TIMEOUT_MS = 10000;
+// The wait has to outlast LOCK_STALE_MS. The other way round, a caller arriving
+// while an abandoned lock was still young gave up before it was ever allowed to
+// reclaim it, so every holder killed mid-section turned into a hard error for
+// the next one. It is the pid that decides whether a holder is alive, though, so
+// staleness only has to cover the moment before the pid is written, and the wait
+// can stay short: it is spent inside Atomics.wait on the prompt hook's path, and
+// an MCP client gives up on a server that stops answering.
+const LOCK_STALE_MS = 1000;
+const LOCK_REUSED_MS = 60000;
+const LOCK_TIMEOUT_MS = 3000;
 const LOCK_RETRY_MS = 5;
 
 // Everything on this path is synchronous and Node has no sleep. Atomics.wait on
@@ -117,23 +121,39 @@ const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 // reads the whole of inbox.jsonl and rewrites a states map of thousands of keys,
 // so a loaded machine really can sit in the section for seconds. Robbing a live
 // holder puts two writers inside it, which is the lost update this file exists
-// to stop. The pid answers the question properly: ESRCH means gone, and EPERM
-// means alive under another user. Age stays only for the moment between the
-// create and the write, when the file is still empty.
+// to stop. The pid answers that question: ESRCH means gone, and EPERM means
+// alive under another user.
+//
+// A pid is not proof on its own, though, and the two ways it lies both end in a
+// file no caller can ever lock again, so each gets an answer below.
 const holderIsGone = (lockFile) => {
     let pid;
+    let age;
     try {
         pid = Number.parseInt(readFileSync(lockFile, 'utf8'), 10);
+        age = Date.now() - statSync(lockFile).mtimeMs;
     } catch {
         return false; // released between the failed open and this read
     }
-    if (Number.isNaN(pid)) {
-        try {
-            return Date.now() - statSync(lockFile).mtimeMs > LOCK_STALE_MS;
-        } catch {
-            return false; // same again: gone before we could stat it
-        }
-    }
+
+    // withLock is synchronous from end to end, so a lock holding this process's
+    // own pid cannot be a live holder: it is our own leftover, from a release
+    // whose delete failed. kill answers that we are alive, which is true and
+    // useless, and the process would then wait out the timeout and throw on
+    // every later use of that file for the rest of its life.
+    if (pid === process.pid) return true;
+
+    // Empty, because we caught the holder between the create and the pid write.
+    if (Number.isNaN(pid)) return age > LOCK_STALE_MS;
+
+    // A pid outlives the process that owned it, and the lock file outlives the
+    // machine. After a crash and a reboot the number belongs to somebody else:
+    // Windows hands low pids out again quickly, and kill answers EPERM for a
+    // process owned by SYSTEM, which reads as alive here too. Nothing would ever
+    // reclaim the file again. No critical section lasts a minute, so a lock this
+    // old is holding a reused pid, whatever kill says about it.
+    if (age > LOCK_REUSED_MS) return true;
+
     try {
         process.kill(pid, 0);
         return false;
@@ -156,7 +176,12 @@ const reclaim = (lockFile) => {
     } catch {
         return false; // somebody else got there first
     }
-    rmSync(grave, { force: true });
+    // The lock is ours from the rename on, so a grave we cannot delete is litter
+    // in HOME and nothing worse. Throwing here would deny the caller a lock it
+    // has already won.
+    try {
+        rmSync(grave, { force: true });
+    } catch { /* left behind, reclaimed by name on the next pass */ }
     return true;
 };
 
@@ -195,12 +220,15 @@ export function withLock(file, work) {
     } finally {
         // Releasing must not be able to fail work that already happened. A
         // markRead that rewrote states.json, or an appendMessages after the
-        // message reached Slack, has to return what it did, and a lock file a
-        // failed delete leaves behind is reclaimed by the next caller anyway.
+        // message reached Slack, has to return what it did. Two separate
+        // attempts, because sharing one would let a failed close skip the
+        // delete, and the file left behind would hold this process's own pid.
         try {
             closeSync(held);
+        } catch { /* the delete below is what actually matters */ }
+        try {
             rmSync(lockFile, { force: true });
-        } catch { /* the reclaim path cleans up after us */ }
+        } catch { /* holderIsGone reads our own pid as gone, so we can retake it */ }
     }
 }
 

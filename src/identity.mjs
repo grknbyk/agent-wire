@@ -81,7 +81,7 @@ export function checkAuthorship({ from, publicKey, signature, ...fields }) {
     if (!publicKey || !signature) return { verdict: 'unsigned' };
     if (!verifySignature(publicKey, signature, { from, ...fields })) return { verdict: 'unsigned' };
 
-    const known = loadPeers()[from];
+    const known = readJson(paths.peers, {})[from];
     if (known && known.publicKey !== publicKey) return { verdict: 'impostor', pinnedSince: known.firstSeen };
     if (known) return { verdict: 'signed' };
 
@@ -93,6 +93,10 @@ export function checkAuthorship({ from, publicKey, signature, ...fields }) {
     // loop and almost always answers with a name already pinned. Locking there
     // cost a page of 100 messages 100 locks on peers.json, and a throw out of
     // one of them threw away the whole page and left the cursor where it was.
+    // It reads uncached for the same reason updateJson does: the cache stamp is
+    // mtimeMs:size, a public key is always the same length, and a forget and a
+    // re-pin inside one millisecond would leave this process answering from the
+    // key that is no longer the pinned one.
     return withLock(paths.peers, () => {
         const peers = readJson(paths.peers, {});
         const pinned = peers[from];

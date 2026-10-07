@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -14,6 +14,18 @@ const { pollOnce } = await import('../src/sync.mjs');
 test.after(() => rmSync(home, { recursive: true, force: true }));
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+// A pid that has certainly been released: a child that has already exited. A
+// made-up number is not portable. 999999 is free here and cannot be a Windows
+// pid, but a Linux host with pid_max raised, which systemd and containers do,
+// can have it running, and these tests would then sit out the whole timeout.
+const exitedPid = async () => {
+    const { spawn } = await import('node:child_process');
+    return new Promise((done) => {
+        const child = spawn(process.execPath, ['--version'], { stdio: 'ignore' });
+        child.on('exit', () => done(child.pid));
+    });
+};
 
 test('nothing to do is not a round trip', async () => {
     let ran = 0;
@@ -144,11 +156,40 @@ test('a message marked read in one process is not lost by another', async () => 
 test('a lock left behind by a dead process is taken, not waited out', async () => {
     const { withLock } = await import('../src/config.mjs');
     const target = join(home, 'dead-holder.json');
-    writeFileSync(`${target}.lock`, '999999'); // a pid that cannot be running
+    writeFileSync(`${target}.lock`, String(await exitedPid()));
 
     const started = Date.now();
     assert.equal(withLock(target, () => 'reclaimed'), 'reclaimed');
     assert.ok(Date.now() - started < 1000, 'the reclaim waited instead of reading the pid');
+});
+
+// Our own pid in a lock file can only be our own leftover, because withLock is
+// synchronous: there is no second place in this process that could be holding
+// it. Reading kill literally there cost the process every later write to that
+// file, a timeout and a throw at a time, for as long as it ran.
+test('a leftover lock holding our own pid does not lock us out', async () => {
+    const { withLock } = await import('../src/config.mjs');
+    const target = join(home, 'own-pid.json');
+    writeFileSync(`${target}.lock`, String(process.pid));
+
+    const started = Date.now();
+    assert.equal(withLock(target, () => 'retaken'), 'retaken');
+    assert.ok(Date.now() - started < 1000, 'the process waited for itself');
+});
+
+// A pid outlives its process and the lock file outlives the machine, so after a
+// reboot the number in an abandoned lock belongs to somebody else. Believing
+// kill then meant nothing could ever reclaim the file, and deleting it by hand
+// was the only way back.
+test('a lock old enough that its pid has been reused is taken anyway', async () => {
+    const { withLock } = await import('../src/config.mjs');
+    const target = join(home, 'reused-pid.json');
+    const lockFile = `${target}.lock`;
+    writeFileSync(lockFile, String(process.ppid)); // alive, and not ours
+    const longAgo = new Date(Date.now() - 120000);
+    utimesSync(lockFile, longAgo, longAgo);
+
+    assert.equal(withLock(target, () => 'reclaimed'), 'reclaimed');
 });
 
 // Taking an abandoned lock used to be three steps, check then delete then
@@ -164,31 +205,47 @@ test('two processes racing one abandoned lock do not both get inside it', async 
     const lockFile = `${target}.lock`;
     const logFile = join(home, 'sections.log');
     const workerFile = join(home, 'reclaim-worker.mjs');
+    const configUrl = pathToFileURL(join(process.cwd(), 'src', 'config.mjs')).href;
 
-    // A worker file rather than --eval, for the same reason as the test above:
+    // A worker file rather than --eval, for the same reason as the test below:
     // an inline script that spawns processes is the shape Defender blocks here.
+    // Both ends of the section are timestamped from inside it, so an overlap in
+    // the tail after the work is as visible as one at the front.
     writeFileSync(workerFile, [
         `process.env.AGENT_WIRE_HOME = ${JSON.stringify(home)};`,
-        `const { withLock } = await import(${JSON.stringify(pathToFileURL(join(process.cwd(), 'src', 'config.mjs')).href)});`,
+        `const { withLock } = await import(${JSON.stringify(configUrl)});`,
         "const { appendFileSync } = await import('node:fs');",
-        'withLock(' + JSON.stringify(target) + ', () => {',
-        '    const entered = Date.now();',
+        `const log = ${JSON.stringify(logFile)};`,
+        `withLock(${JSON.stringify(target)}, () => {`,
+        "    appendFileSync(log, process.pid + ' enter ' + Date.now() + '\\n');",
         '    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);',
-        `    appendFileSync(${JSON.stringify(logFile)}, \`\${entered} \${Date.now()}\\n\`);`,
+        "    appendFileSync(log, process.pid + ' exit ' + Date.now() + '\\n');",
         '});',
     ].join('\n'));
 
+    const dead = String(await exitedPid());
     let overlaps = 0;
     for (let round = 0; round < ROUNDS; round++) {
         writeFileSync(logFile, '');
-        writeFileSync(lockFile, '999999'); // abandoned, so all four race the reclaim at once
-        await Promise.all(Array.from({ length: RACERS }, () => new Promise((done) => {
+        writeFileSync(lockFile, dead); // abandoned, so all four race the reclaim at once
+        const codes = await Promise.all(Array.from({ length: RACERS }, () => new Promise((done) => {
             spawn(process.execPath, [workerFile], { stdio: 'ignore' }).on('exit', done);
         })));
 
-        const sections = readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean)
-            .map((line) => line.split(' ').map(Number))
+        // Without these two the test passed on an empty log: every racer throwing
+        // leaves nothing to compare, and nothing to compare has no overlaps in it.
+        assert.deepEqual(codes, Array(RACERS).fill(0), 'a racer threw instead of taking the lock');
+
+        const marks = new Map();
+        for (const line of readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean)) {
+            const [pid, phase, at] = line.split(' ');
+            if (!marks.has(pid)) marks.set(pid, {});
+            marks.get(pid)[phase] = Number(at);
+        }
+        const sections = [...marks.values()].map(({ enter, exit }) => [enter, exit])
             .sort(([left], [right]) => left - right);
+        assert.equal(sections.length, RACERS, 'a racer never got inside the section');
+
         for (let index = 1; index < sections.length; index++) {
             if (sections[index][0] < sections[index - 1][1]) overlaps++;
         }
