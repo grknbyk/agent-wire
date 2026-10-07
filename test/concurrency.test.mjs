@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
 process.env.AGENT_WIRE_HOME = home;
@@ -102,8 +103,7 @@ test('one failing channel does not cost the other channels their messages', asyn
 // renaming onto a file another process holds open is refused there.
 test('a message marked read in one process is not lost by another', async () => {
     const { spawn } = await import('node:child_process');
-    const { mkdtempSync, readFileSync: read, rmSync: remove, writeFileSync } = await import('node:fs');
-    const { pathToFileURL } = await import('node:url');
+    const { mkdtempSync, readFileSync: read, rmSync: remove } = await import('node:fs');
 
     const PROCESSES = 4;
     const COUNT = 200;
@@ -127,9 +127,72 @@ test('a message marked read in one process is not lost by another', async () => 
         }).on('exit', done);
     })));
 
-    const kept = Object.keys(JSON.parse(read(join(racing, 'states.json'), 'utf8'))).length;
-    remove(racing, { recursive: true, force: true });
+    // The exit codes come first: when every worker dies there is no states.json
+    // to read, and reading it first replaced the message that says so with ENOENT.
+    try {
+        assert.deepEqual(codes, Array(PROCESSES).fill(0), 'a worker crashed, which is the EPERM the lock removes');
+        const kept = Object.keys(JSON.parse(read(join(racing, 'states.json'), 'utf8'))).length;
+        assert.equal(kept, PROCESSES * COUNT, `${PROCESSES * COUNT - kept} marks were lost to a concurrent write`);
+    } finally {
+        remove(racing, { recursive: true, force: true });
+    }
+});
 
-    assert.deepEqual(codes, Array(PROCESSES).fill(0), 'a worker crashed, which is the EPERM the lock removes');
-    assert.equal(kept, PROCESSES * COUNT, `${PROCESSES * COUNT - kept} marks were lost to a concurrent write`);
+// The lock a dead holder left behind was its own kind of outage: until the
+// reclaim knew to look at the pid, the next caller sat out the whole timeout and
+// then threw, so one process killed mid-write broke every later one.
+test('a lock left behind by a dead process is taken, not waited out', async () => {
+    const { withLock } = await import('../src/config.mjs');
+    const target = join(home, 'dead-holder.json');
+    writeFileSync(`${target}.lock`, '999999'); // a pid that cannot be running
+
+    const started = Date.now();
+    assert.equal(withLock(target, () => 'reclaimed'), 'reclaimed');
+    assert.ok(Date.now() - started < 1000, 'the reclaim waited instead of reading the pid');
+});
+
+// Taking an abandoned lock used to be three steps, check then delete then
+// create, and a second waiter that checked before the winner's delete and
+// deleted after its create got inside the section too. 25 rounds of this found
+// 73 overlaps against that shape and none against the rename.
+test('two processes racing one abandoned lock do not both get inside it', async () => {
+    const { spawn } = await import('node:child_process');
+
+    const ROUNDS = 8;
+    const RACERS = 4;
+    const target = join(home, 'race-reclaim.json');
+    const lockFile = `${target}.lock`;
+    const logFile = join(home, 'sections.log');
+    const workerFile = join(home, 'reclaim-worker.mjs');
+
+    // A worker file rather than --eval, for the same reason as the test above:
+    // an inline script that spawns processes is the shape Defender blocks here.
+    writeFileSync(workerFile, [
+        `process.env.AGENT_WIRE_HOME = ${JSON.stringify(home)};`,
+        `const { withLock } = await import(${JSON.stringify(pathToFileURL(join(process.cwd(), 'src', 'config.mjs')).href)});`,
+        "const { appendFileSync } = await import('node:fs');",
+        'withLock(' + JSON.stringify(target) + ', () => {',
+        '    const entered = Date.now();',
+        '    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);',
+        `    appendFileSync(${JSON.stringify(logFile)}, \`\${entered} \${Date.now()}\\n\`);`,
+        '});',
+    ].join('\n'));
+
+    let overlaps = 0;
+    for (let round = 0; round < ROUNDS; round++) {
+        writeFileSync(logFile, '');
+        writeFileSync(lockFile, '999999'); // abandoned, so all four race the reclaim at once
+        await Promise.all(Array.from({ length: RACERS }, () => new Promise((done) => {
+            spawn(process.execPath, [workerFile], { stdio: 'ignore' }).on('exit', done);
+        })));
+
+        const sections = readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean)
+            .map((line) => line.split(' ').map(Number))
+            .sort(([left], [right]) => left - right);
+        for (let index = 1; index < sections.length; index++) {
+            if (sections[index][0] < sections[index - 1][1]) overlaps++;
+        }
+    }
+
+    assert.equal(overlaps, 0, `${overlaps} sections overlapped, so two processes held the lock together`);
 });

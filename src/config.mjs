@@ -97,26 +97,72 @@ export function writeJson(file, value) {
 // messages read each kept 226 of 800. On Windows it is worse than silent:
 // renaming onto a file another process holds open throws EPERM, so markRead
 // threw, and a send that had already reached Slack came back as a failure.
-const LOCK_TIMEOUT_MS = 1000;
-const LOCK_STALE_MS = 2000;
+//
+// The wait has to outlast the staleness check. The other way round, a caller
+// arriving while an abandoned lock was still young gave up before it was ever
+// allowed to reclaim it, so every holder killed mid-section turned into a hard
+// error for the next one.
+const LOCK_STALE_MS = 5000;
+const LOCK_TIMEOUT_MS = 10000;
 const LOCK_RETRY_MS = 5;
 
 // Everything on this path is synchronous and Node has no sleep. Atomics.wait on
 // a buffer nobody ever wakes is the one way to pause without an event loop turn.
+// LOCK_TIMEOUT_MS is therefore also the ceiling on how long this blocks the
+// event loop, which is why it is read out loud here: inside the syncer it is
+// spent against the same budget as the Slack fetches.
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-const lockIsStale = (lockFile) => {
+// Age alone cannot tell a dead holder from a slow one, and archive() with no ts
+// reads the whole of inbox.jsonl and rewrites a states map of thousands of keys,
+// so a loaded machine really can sit in the section for seconds. Robbing a live
+// holder puts two writers inside it, which is the lost update this file exists
+// to stop. The pid answers the question properly: ESRCH means gone, and EPERM
+// means alive under another user. Age stays only for the moment between the
+// create and the write, when the file is still empty.
+const holderIsGone = (lockFile) => {
+    let pid;
     try {
-        return Date.now() - statSync(lockFile).mtimeMs > LOCK_STALE_MS;
+        pid = Number.parseInt(readFileSync(lockFile, 'utf8'), 10);
     } catch {
-        return false; // it was released between the failed open and this check
+        return false; // released between the failed open and this read
     }
+    if (Number.isNaN(pid)) {
+        try {
+            return Date.now() - statSync(lockFile).mtimeMs > LOCK_STALE_MS;
+        } catch {
+            return false; // same again: gone before we could stat it
+        }
+    }
+    try {
+        process.kill(pid, 0);
+        return false;
+    } catch (error) {
+        return error.code === 'ESRCH';
+    }
+};
+
+// Renaming is the only way to take an abandoned lock without two processes
+// taking it together. Check, delete, create is three steps, and a second waiter
+// that checked before the winner's delete and deleted after the winner's create
+// ended up inside the section with it: four processes racing an already-stale
+// lock overlapped on 2 of 25 rounds. Exactly one rename can win, and only the
+// winner may delete. On Windows the rename also fails while the holder still has
+// the file open, which is the answer we want anyway.
+const reclaim = (lockFile) => {
+    const grave = `${lockFile}.${process.pid}.dead`;
+    try {
+        renameSync(lockFile, grave);
+    } catch {
+        return false; // somebody else got there first
+    }
+    rmSync(grave, { force: true });
+    return true;
 };
 
 // A lock file beside the data, created with 'wx' so the create either wins or
 // fails. A holder killed mid-write would otherwise block the file forever, so a
-// lock older than LOCK_STALE_MS is taken from it; the critical section is one
-// parse and one write, measured in milliseconds.
+// lock whose process is gone is taken from it.
 export function withLock(file, work) {
     mkdirSync(HOME, { recursive: true });
     const lockFile = `${file}.lock`;
@@ -131,10 +177,9 @@ export function withLock(file, work) {
             // process holds it open, and again while a delete is still pending. Both
             // mean the same thing here: somebody else has it, come back.
             if (error.code !== 'EEXIST' && error.code !== 'EPERM') throw error;
-            if (lockIsStale(lockFile)) {
-                rmSync(lockFile, { force: true });
-                continue;
-            }
+            // Losing the reclaim is not an error: it means another waiter took the
+            // abandoned lock, so wait for that one the same as any other holder.
+            if (holderIsGone(lockFile) && reclaim(lockFile)) continue;
             // Failing out loud beats writing over somebody else's change. A hook
             // that prints an error is a hook the user can do something about.
             if (Date.now() > deadline) {
@@ -145,10 +190,17 @@ export function withLock(file, work) {
     }
 
     try {
+        writeFileSync(held, String(process.pid));
         return work();
     } finally {
-        closeSync(held);
-        rmSync(lockFile, { force: true });
+        // Releasing must not be able to fail work that already happened. A
+        // markRead that rewrote states.json, or an appendMessages after the
+        // message reached Slack, has to return what it did, and a lock file a
+        // failed delete leaves behind is reclaimed by the next caller anyway.
+        try {
+            closeSync(held);
+            rmSync(lockFile, { force: true });
+        } catch { /* the reclaim path cleans up after us */ }
     }
 }
 

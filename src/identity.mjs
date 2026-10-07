@@ -81,10 +81,18 @@ export function checkAuthorship({ from, publicKey, signature, ...fields }) {
     if (!publicKey || !signature) return { verdict: 'unsigned' };
     if (!verifySignature(publicKey, signature, { from, ...fields })) return { verdict: 'unsigned' };
 
-    // Under the lock, and read fresh inside it. A pin another process wrote a
-    // moment ago must not be lost to this one's older copy: losing a pin means
-    // the next message under that name pins again, which is how a forged key
-    // gets accepted as new.
+    const known = loadPeers()[from];
+    if (known && known.publicKey !== publicKey) return { verdict: 'impostor', pinnedSince: known.firstSeen };
+    if (known) return { verdict: 'signed' };
+
+    // Only a name nobody has pinned yet reaches the lock, and it reads again
+    // inside: a pin another process wrote a moment ago must not be lost to this
+    // one's older copy, because losing a pin means the next message under that
+    // name pins again, and that is how a forged key gets accepted as new. The
+    // read above stays outside, because this runs once per message in the poll
+    // loop and almost always answers with a name already pinned. Locking there
+    // cost a page of 100 messages 100 locks on peers.json, and a throw out of
+    // one of them threw away the whole page and left the cursor where it was.
     return withLock(paths.peers, () => {
         const peers = readJson(paths.peers, {});
         const pinned = peers[from];
