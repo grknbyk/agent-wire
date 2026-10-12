@@ -27,7 +27,14 @@ function fakeClient({ history = [], lookback = [], replies = {}, repliesOk = tru
         if (method === 'conversations.history') {
             return { ok: true, messages: params.oldest === undefined ? lookback : history, has_more: false };
         }
-        if (method === 'conversations.replies') return repliesOk ? { ok: true, messages: replies[params.ts] ?? [] } : { ok: false, error: 'ratelimited' };
+        if (method === 'conversations.replies') {
+            if (!repliesOk) return { ok: false, error: 'ratelimited' };
+            // An array is one page; an object holds pages by the cursor that asks for them.
+            const answer = replies[params.ts] ?? [];
+            if (Array.isArray(answer)) return { ok: true, messages: answer };
+            const page = answer[params.cursor ?? ''];
+            return { ok: true, messages: page.messages, has_more: Boolean(page.next), response_metadata: { next_cursor: page.next ?? '' } };
+        }
         if (method === 'users.info') return { ok: true, user: { profile: { display_name: params.user.toLowerCase() } } };
         if (method === 'files.info') return fileInfo;
         throw new Error(`unexpected Slack method ${method}`);
@@ -74,6 +81,23 @@ test('a reply inside a thread reaches the log, and the cursor stays with the cha
     assert.deepEqual(result.items.map((item) => item.text), ['top', 'reply']);
     assert.equal(result.newest, '1005.000000', 'a reply must not move the cursor past a top-level message');
     assert.equal(result.newestReply, '1010.000000', 'replies keep a mark of their own');
+});
+
+test('a thread longer than one page is read to its end', async () => {
+    const client = fakeClient({
+        history: [],
+        lookback: [parent],
+        replies: {
+            [parent.ts]: {
+                '': { messages: [parent, human('1001.000000', 'first page')], next: 'page2' },
+                page2: { messages: [human('1010.000000', 'second page')] },
+            },
+        },
+    });
+
+    const result = await pollChannel(client, channel, { since: SINCE, myNickname: 'mira' });
+
+    assert.deepEqual(result.items.map((item) => item.text), ['first page', 'second page']);
 });
 
 test('a thread whose replies are behind the reply mark is not read again', async () => {

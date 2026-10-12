@@ -423,18 +423,27 @@ async function threadReplies(client, channel, { repliesSince, myNickname }) {
         message.reply_count > 0 && Number(message.latest_reply) > Number(repliesSince));
     const replies = [];
     for (const parent of parents) {
-        const thread = await client.form('conversations.replies', {
-            channel: channel.id,
-            ts: parent.ts,
-            oldest: repliesSince,
-            limit: PAGE_LIMIT,
-            include_all_metadata: true,
-        });
-        if (!thread.ok) return { replies: [], newestReply: null };
+        // Every page, because the mark below jumps to the thread's latest reply:
+        // a reply left on an unread page would sit behind it for good.
+        let cursor = '';
+        for (let page = 0; page < MAX_PAGES; page++) {
+            const thread = await client.form('conversations.replies', {
+                channel: channel.id,
+                ts: parent.ts,
+                oldest: repliesSince,
+                limit: PAGE_LIMIT,
+                include_all_metadata: true,
+                ...(cursor ? { cursor } : {}),
+            });
+            if (!thread.ok) return { replies: [], newestReply: null };
 
-        // The parent comes back first in every answer, whatever oldest says.
-        replies.push(...thread.messages.filter((message) =>
-            message.ts !== parent.ts && Number(message.ts) > Number(repliesSince) && isKept(message)));
+            // The parent comes back first in every answer, whatever oldest says.
+            replies.push(...thread.messages.filter((message) =>
+                message.ts !== parent.ts && Number(message.ts) > Number(repliesSince) && isKept(message)));
+
+            cursor = thread.response_metadata?.next_cursor ?? '';
+            if (!thread.has_more || !cursor) break;
+        }
     }
 
     const namesById = await namesInPage(client, replies);
