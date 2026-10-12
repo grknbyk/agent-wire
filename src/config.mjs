@@ -15,6 +15,9 @@ export const paths = {
     users: join(HOME, 'users.json'),
     files: join(HOME, 'files'),
     pollLock: join(HOME, 'poll.lock'),
+    // Touched after a poll that reached Slack and wrote the log. poll.lock is only
+    // the heartbeat: it stayed fresh through weeks of polls that all failed.
+    synced: join(HOME, 'synced'),
     update: join(HOME, 'update.json'),
 };
 

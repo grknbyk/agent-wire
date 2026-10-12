@@ -5,7 +5,7 @@
 // inbox.jsonl is append-only and keyed by the Slack timestamp, which is unique per
 // channel and survives a re-install. Message state lives in a separate file so the
 // append-only log never has to be rewritten in place.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 
 import { HOME, derivedFromFile, paths, readJson, readJsonCached, scopeId, updateJson, withLock, writeJson } from './config.mjs';
 import { splitHandle } from './protocol.mjs';
@@ -174,9 +174,26 @@ export function findByRef(handle) {
         .at(-1) ?? null;
 }
 
-export const readCursor = (channelId) => readJsonCached(paths.cursors, {})[channelId] ?? null;
+// cursors.json is the one file whose loss costs nothing: without a cursor a poll
+// reads the newest page again and the log's ts key drops the repeats. One found
+// full of NUL bytes after an interrupted write threw out of every poll for four
+// weeks, so a file that does not parse is moved aside and read as empty.
+function cursors() {
+    try {
+        return readJsonCached(paths.cursors, {});
+    } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        renameSync(paths.cursors, `${paths.cursors}.corrupt-${Date.now()}`);
+        return {};
+    }
+}
 
-export const writeCursor = (channelId, ts) => updateJson(paths.cursors, {}, (cursors) => {
-    cursors[channelId] = ts;
-    return cursors;
-});
+export const readCursor = (channelId) => cursors()[channelId] ?? null;
+
+export const writeCursor = (channelId, ts) => {
+    cursors(); // updateJson's own read would throw on a corrupt file
+    return updateJson(paths.cursors, {}, (all) => {
+        all[channelId] = ts;
+        return all;
+    });
+};

@@ -43,17 +43,24 @@ export async function pollOnce(config, { budgetMs = null } = {}) {
     const channels = pollableChannels(config);
     const deadline = budgetMs ? Date.now() + budgetMs : null;
     const client = slackClient(config.bot_token, { deadline });
-    const polled = await mapLimit(channels, CHANNEL_CONCURRENCY, (channel) =>
-        pollChannel(client, channel, {
-            since: readCursor(channel.id),
-            repliesSince: readCursor(repliesKey(channel.id)),
-            myNickname: config.nickname,
-            deadline,
-        })
-            .catch((error) => ({ ok: false, reason: error.message, items: [] })));
+    // async, so a throw before pollChannel returns its promise (reading the cursor)
+    // is this channel's failure too, not the whole poll's.
+    const polled = await mapLimit(channels, CHANNEL_CONCURRENCY, async (channel) => {
+        try {
+            return await pollChannel(client, channel, {
+                since: readCursor(channel.id),
+                repliesSince: readCursor(repliesKey(channel.id)),
+                myNickname: config.nickname,
+                deadline,
+            });
+        } catch (error) {
+            return { ok: false, reason: error.message, items: [] };
+        }
+    });
 
     let added = 0;
     let refused = null;
+    let synced = false;
     for (const [index, result] of polled.entries()) {
         if (!result.ok) {
             // Reported rather than swallowed. The syncer decides how fast to come
@@ -65,7 +72,9 @@ export async function pollOnce(config, { budgetMs = null } = {}) {
         added += appendMessages(result.items);
         if (result.newest) writeCursor(channels[index].id, result.newest);
         if (result.newestReply) writeCursor(repliesKey(channels[index].id), result.newestReply);
+        synced = true;
     }
+    if (synced) writeFileSync(paths.synced, String(Date.now()));
     return { added, refused };
 }
 

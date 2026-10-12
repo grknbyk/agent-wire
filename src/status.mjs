@@ -67,7 +67,9 @@ function ago(milliseconds) {
     return `${Math.round(seconds / 86400)}d ago`;
 }
 
-export const lastPoll = () => (existsSync(paths.pollLock) ? ago(Date.now() - statSync(paths.pollLock).mtimeMs) : 'never');
+// The last poll that reached Slack, not the heartbeat. Reading poll.lock said
+// "3s ago" through four weeks in which no poll wrote anything.
+export const lastPoll = () => (existsSync(paths.synced) ? ago(Date.now() - statSync(paths.synced).mtimeMs) : 'never');
 
 const PEERS_SHOWN = 9; // three full rows of the three-column layout
 

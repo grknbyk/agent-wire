@@ -32,7 +32,7 @@ restore CRLF, or the diff is the whole file.
 
 ## How to verify a change
 
-`npm test` — 163 tests across 16 files.
+`npm test` — 166 tests across 17 files.
 
 A change to the lock in `src/config.mjs` needs more than a green suite, because the suite was
 green through two rounds of confirmed concurrency bugs. Each guard in
