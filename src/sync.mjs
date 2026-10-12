@@ -36,12 +36,20 @@ export function syncEveryMs(config) {
 //
 // A channel that throws is caught here rather than at the caller, so one broken
 // channel costs its own messages instead of everybody else's.
+// Thread replies keep their own mark beside the channel's, in the same file.
+const repliesKey = (channelId) => `${channelId}/replies`;
+
 export async function pollOnce(config, { budgetMs = null } = {}) {
     const channels = pollableChannels(config);
     const deadline = budgetMs ? Date.now() + budgetMs : null;
     const client = slackClient(config.bot_token, { deadline });
     const polled = await mapLimit(channels, CHANNEL_CONCURRENCY, (channel) =>
-        pollChannel(client, channel, { since: readCursor(channel.id), myNickname: config.nickname, deadline })
+        pollChannel(client, channel, {
+            since: readCursor(channel.id),
+            repliesSince: readCursor(repliesKey(channel.id)),
+            myNickname: config.nickname,
+            deadline,
+        })
             .catch((error) => ({ ok: false, reason: error.message, items: [] })));
 
     let added = 0;
@@ -56,6 +64,7 @@ export async function pollOnce(config, { budgetMs = null } = {}) {
 
         added += appendMessages(result.items);
         if (result.newest) writeCursor(channels[index].id, result.newest);
+        if (result.newestReply) writeCursor(repliesKey(channels[index].id), result.newestReply);
     }
     return { added, refused };
 }

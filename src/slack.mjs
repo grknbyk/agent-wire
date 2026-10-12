@@ -1,7 +1,7 @@
 // The Slack side: one thin client, the probes that setup and doctor both use, and
 // the poll that turns channel history into local inbox items.
 import { basename, join } from 'node:path';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 
 import { paths, readJsonCached, writeJson } from './config.mjs';
 import { checkAuthorship } from './identity.mjs';
@@ -21,7 +21,10 @@ const REQUEST_TIMEOUT_MS = 15000;
 const PAGE_LIMIT = 100;
 const MAX_PAGES = 10;
 const MEMBER_LIMIT = 200;
-const FILE_SHARE = 'file_share';
+// The subtypes that carry a real message. The rest are joins, leaves and topic
+// changes, and dropping them is the point. thread_broadcast is a thread reply also
+// sent to the channel; dropping it lost the one reply Slack does show in history.
+const KEPT_SUBTYPES = new Set(['file_share', 'thread_broadcast']);
 
 // Long enough to keep a real document name recognisable, short enough that the
 // Slack file id in front of it still fits a filesystem path.
@@ -234,15 +237,26 @@ async function downloadAttachment(client, file) {
         return { name: file.name, path: null, size: Number(file.size), skipped: 'larger than 20 MB' };
     }
 
-    const response = await fetch(source, { headers: { authorization: `Bearer ${client.token}` } });
-    if (!response.ok) {
-        return { name: file.name, path: null, size: Number(file.size), skipped: `download failed, HTTP ${response.status}` };
-    }
-
-    mkdirSync(paths.files, { recursive: true });
+    // A file id names the same bytes forever, so a copy already on disk is used: a
+    // thread is read again until its replies are behind the reply cursor, and a
+    // reader may open the same message twice.
     const localPath = join(paths.files, `${file.id}-${safeName(file.name)}`);
-    writeFileSync(localPath, Buffer.from(await response.arrayBuffer()));
-    return { name: file.name, path: localPath, size: Number(file.size) };
+    if (existsSync(localPath)) return { name: file.name, path: localPath, size: Number(file.size) };
+
+    // Caught, because a reset connection here used to throw out of the whole poll,
+    // or out of the inbox tool after it had marked the messages read.
+    try {
+        const response = await fetch(source, { headers: { authorization: `Bearer ${client.token}` } });
+        if (!response.ok) {
+            return { name: file.name, path: null, size: Number(file.size), skipped: `download failed, HTTP ${response.status}` };
+        }
+
+        mkdirSync(paths.files, { recursive: true });
+        writeFileSync(localPath, Buffer.from(await response.arrayBuffer()));
+        return { name: file.name, path: localPath, size: Number(file.size) };
+    } catch (error) {
+        return { name: file.name, path: null, size: Number(file.size), skipped: `download failed, ${error.name}` };
+    }
 }
 
 async function downloadAll(client, files) {
@@ -250,7 +264,20 @@ async function downloadAll(client, files) {
     return saved.filter(Boolean);
 }
 
-async function downloadById(client, fileId) {
+// The same id on disk answers without asking Slack. The name is the sanitised one
+// it was saved under, which is all that is left of the original.
+function storedFile(fileId) {
+    if (!existsSync(paths.files)) return null;
+    const stored = readdirSync(paths.files).find((name) => name.startsWith(`${fileId}-`));
+    if (!stored) return null;
+    const path = join(paths.files, stored);
+    return { name: stored.slice(fileId.length + 1), path, size: statSync(path).size };
+}
+
+export async function downloadById(client, fileId) {
+    const stored = storedFile(fileId);
+    if (stored) return [stored];
+
     const fileInfo = await client.form('files.info', { file: fileId });
     if (!fileInfo.ok) return [];
 
@@ -341,6 +368,10 @@ async function agentItem(client, message, channel, payload, inHurry = false) {
     const isTrusted = authorship.verdict === 'signed' || authorship.verdict === 'new';
     const wanted = payload.file && isTrusted && !inHurry;
     const files = wanted ? await downloadById(client, payload.file) : [];
+    // A file not fetched now keeps its id on the item. Without it the log named the
+    // file nowhere, and the syncer's later copy that had the bytes was dropped as a
+    // duplicate ts, so a message first read by handle never got its file.
+    const pending = isTrusted && payload.file && files.length === 0;
 
     return {
         ts: message.ts,
@@ -357,13 +388,70 @@ async function agentItem(client, message, channel, payload, inHurry = false) {
         ref: parsed?.ref ?? '',
         text,
         files,
+        ...(pending ? { fileId: payload.file } : {}),
     };
+}
+
+const isKept = (message) => !message.subtype || KEPT_SUBTYPES.has(message.subtype);
+
+// One message to one log item, or null for a message the log does not keep.
+async function itemFor(client, message, channel, { myNickname, namesById, inHurry }) {
+    const payload = message.metadata?.event_type === METADATA_EVENT ? message.metadata.event_payload : null;
+    if (payload?.from === myNickname) return null; // our own post, already in our log
+    if (payload) return agentItem(client, message, channel, payload, inHurry);
+    if (message.bot_id) return null; // another app, or the bare upload our own sidecar describes
+    return humanItem(client, message, channel, namesById);
+}
+
+// conversations.history leaves thread replies out; only conversations.replies
+// returns them, one thread per call. A parent can be far older than the channel
+// cursor, so the parents come from the newest page of the channel, read without
+// `oldest` (with it Slack answers from the old end of the range). A reply to a
+// thread older than that page is not seen.
+//
+// Replies have their own cursor, `repliesSince`. Sharing the channel's would
+// read every reply again on each poll until somebody posted at the top level,
+// since a reply must not move the channel cursor past a top-level message. The
+// new mark is the newest latest_reply seen in the parent read: any reply posted
+// after that read is newer than it, so the next poll still finds it. The mark
+// moves only when every read succeeded, so a refused thread is read again.
+async function threadReplies(client, channel, { repliesSince, myNickname }) {
+    const recent = await client.form('conversations.history', { channel: channel.id, limit: PAGE_LIMIT });
+    if (!recent.ok) return { replies: [], newestReply: null };
+
+    const parents = recent.messages.filter((message) =>
+        message.reply_count > 0 && Number(message.latest_reply) > Number(repliesSince));
+    const replies = [];
+    for (const parent of parents) {
+        const thread = await client.form('conversations.replies', {
+            channel: channel.id,
+            ts: parent.ts,
+            oldest: repliesSince,
+            limit: PAGE_LIMIT,
+            include_all_metadata: true,
+        });
+        if (!thread.ok) return { replies: [], newestReply: null };
+
+        // The parent comes back first in every answer, whatever oldest says.
+        replies.push(...thread.messages.filter((message) =>
+            message.ts !== parent.ts && Number(message.ts) > Number(repliesSince) && isKept(message)));
+    }
+
+    const namesById = await namesInPage(client, replies);
+    const items = [];
+    for (const reply of replies) {
+        const item = await itemFor(client, reply, channel, { myNickname, namesById, inHurry: false });
+        if (item) items.push(item);
+    }
+    const newestReply = parents.reduce((newest, parent) =>
+        (Number(parent.latest_reply) > Number(newest) ? parent.latest_reply : newest), repliesSince);
+    return { replies: items, newestReply };
 }
 
 // Returns items oldest-first. With `oldest` set, Slack answers from the old end of
 // the range, so messages[0] is the high-water mark and a burst wider than one page
 // is carried across polls rather than dropped.
-export async function pollChannel(client, channel, { since, myNickname, deadline = null }) {
+export async function pollChannel(client, channel, { since, repliesSince = null, myNickname, deadline = null }) {
     const items = [];
     let newest = since;
     let cursor = '';
@@ -393,26 +481,27 @@ export async function pollChannel(client, channel, { since, myNickname, deadline
         const namesById = await namesInPage(client, history.messages);
 
         for (const message of history.messages.slice().reverse()) {
-            // file_share is the one subtype carrying a real message. The rest are
-            // joins, leaves and topic changes, and dropping them is the point.
-            if (message.subtype && message.subtype !== FILE_SHARE) continue;
+            if (!isKept(message)) continue;
             if (!newest || Number(message.ts) > Number(newest)) newest = message.ts;
 
-            const payload = message.metadata?.event_type === METADATA_EVENT ? message.metadata.event_payload : null;
-            if (payload?.from === myNickname) continue; // our own post, already in our log
-            if (payload) {
-                items.push(await agentItem(client, message, channel, payload, Boolean(deadline)));
-                continue;
-            }
-            if (message.bot_id) continue; // another app, or the bare upload our own sidecar describes
-
-            const human = await humanItem(client, message, channel, namesById);
-            if (human) items.push(human);
+            const item = await itemFor(client, message, channel, { myNickname, namesById, inHurry: Boolean(deadline) });
+            if (item) items.push(item);
         }
 
         cursor = history.response_metadata?.next_cursor ?? '';
         if (!history.has_more || !cursor) break;
     }
 
-    return { ok: true, items, newest };
+    // Only the syncer reads threads: a deadline means somebody is waiting, and a
+    // first poll has no cursor to measure "new" against.
+    let newestReply = null;
+    if (!deadline && since) {
+        const thread = await threadReplies(client, channel, { repliesSince: repliesSince ?? since, myNickname });
+        const seen = new Set(items.map((item) => item.ts)); // a broadcast reply is in both reads
+        items.push(...thread.replies.filter((item) => !seen.has(item.ts)));
+        items.sort((left, right) => Number(left.ts) - Number(right.ts));
+        newestReply = thread.newestReply;
+    }
+
+    return { ok: true, items, newest, newestReply };
 }

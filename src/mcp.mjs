@@ -11,7 +11,7 @@ import { MODES, activeChannels, channelMode, findChannel, isAmbiguous, loadConfi
 import { DEFAULT_COUNT, appendMessages, archive, findByRef, findByTs, markRead, selectMessages } from './inbox.mjs';
 import { FINGERPRINT_CHARS, listPeers, signMessage } from './identity.mjs';
 import { refusalFor } from './manners.mjs';
-import { deleteMessage, listMembers, postMessage, shareFile, slackClient, stageFile } from './slack.mjs';
+import { deleteMessage, downloadById, listMembers, postMessage, shareFile, slackClient, stageFile } from './slack.mjs';
 import { MAX_HOPS, TEXT_MAX, formatMessage, mintNonce, mintRef, recipientNames, renderEnvelope } from './protocol.mjs';
 import { ensureSyncer, fetchByRef } from './sync.mjs';
 import { refreshLatest, updateNotice } from './version.mjs';
@@ -447,6 +447,21 @@ async function sendText(config, { to, text, channel, replyTo }) {
     return `delivered to ${to} in #${target.name} as ${target.name}@${ref}`;
 }
 
+// A message logged before its file was fetched names the file id instead: a handle
+// sweep is in a hurry and skips the bytes, and a download can fail. The inbox tool
+// is a reader that may wait on Slack, so the file is fetched here, on the way out,
+// one at a time. It is not written back to the log: the next read finds the bytes
+// on disk by their id.
+async function withFiles(config, items) {
+    const pending = items.filter((item) => item.fileId && item.files.length === 0);
+    if (pending.length === 0) return items;
+
+    const client = slackClient(config.bot_token);
+    const fetched = new Map();
+    for (const item of pending) fetched.set(item, await downloadById(client, item.fileId));
+    return items.map((item) => (fetched.has(item) ? { ...item, files: fetched.get(item) } : item));
+}
+
 // Our own sent messages go into the local log too, so the log is a complete
 // record rather than half a conversation. The poller skips them by nickname, so
 // this cannot double up.
@@ -601,8 +616,10 @@ async function call(name, args, session) {
                     ? `cannot tell yet whether ${tag} is in the channel: Slack answered \`${sweep.blocked}\` to the sweep, and the local log does not have it. Worth one retry in a minute.`
                     : `no message with the handle ${tag} — not in this log, and a sweep of the channel did not turn it up either`);
             }
+            // Fetched before marking, so a failure cannot leave a message read but unseen.
+            const [shown] = await withFiles(config, [found]);
             markRead([found]);
-            return renderEnvelope(session.nonce, found, config.nickname);
+            return renderEnvelope(session.nonce, shown, config.nickname);
         }
 
         // Naming a channel reaches it even when it is switched off; the default
@@ -622,8 +639,9 @@ async function call(name, args, session) {
             return `no ${asked} messages (log last synced ${lastPoll()})`;
         }
 
+        const shown = await withFiles(config, items);
         if (!args.state || args.state === 'unread') markRead(items);
-        return items.map((item) => renderEnvelope(session.nonce, item, config.nickname)).join('\n\n');
+        return shown.map((item) => renderEnvelope(session.nonce, item, config.nickname)).join('\n\n');
     }
 
     // Checked here rather than inside sendText, so a refusal never reaches Slack
