@@ -1,0 +1,14 @@
+{
+  "read_inbox_ms": 29.35,
+  "select_unread_ms": 37.7767,
+  "select_by_channel_ms": 34.2477,
+  "append_dedup_ms": 31.1247,
+  "find_by_ts_ms": 27.1637,
+  "verify_authorship_ms": 36.0229,
+  "render_envelope_ms": 0.1601,
+  "list_members_ms": 19.2273,
+  "poll_channel_ms": 51.1471,
+  "rss_peak_mb": 153,
+  "total_work_ms": 266.22,
+  "cold_help_ms": 61.1
+}

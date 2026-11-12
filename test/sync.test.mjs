@@ -1,0 +1,107 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+
+const home = mkdtempSync(join(tmpdir(), 'agent-wire-test-'));
+process.env.AGENT_WIRE_HOME = home;
+
+const { paths } = await import('../src/config.mjs');
+const { NOT_LOGGED_IN, nextDelay, pollOnce, syncEveryMs, syncerIsLive } = await import('../src/sync.mjs');
+
+test.after(() => rmSync(home, { recursive: true, force: true }));
+
+const heldAt = (when) => writeFileSync(paths.pollLock, `4242:${when}`);
+
+test('a config that says nothing about syncing syncs once a minute', () => {
+    assert.equal(syncEveryMs({}), 60000);
+    assert.equal(syncEveryMs(undefined), 60000);
+    assert.equal(syncEveryMs({ sync_seconds: null }), 60000);
+});
+
+test('sync_seconds is honoured, and a typo in it cannot hammer the workspace', () => {
+    assert.equal(syncEveryMs({ sync_seconds: 30 }), 30000);
+    assert.equal(syncEveryMs({ sync_seconds: 300 }), 300000);
+
+    // One token is shared by the whole team, so the floor is not negotiable.
+    assert.equal(syncEveryMs({ sync_seconds: 1 }), 5000, 'a 1-second sync is clamped to the floor');
+    assert.equal(syncEveryMs({ sync_seconds: 0 }), 60000, 'zero reads as unset, not as "never wait"');
+    assert.equal(syncEveryMs({ sync_seconds: -10 }), 60000);
+    assert.equal(syncEveryMs({ sync_seconds: 'every minute' }), 60000);
+});
+
+test('no lock file means no syncer, rather than a crash', () => {
+    try {
+        unlinkSync(paths.pollLock);
+    } catch {
+        // It was not there, which is the state this test wants.
+    }
+    // The subtraction gives NaN here, and NaN is not less than the threshold.
+    assert.equal(syncerIsLive(), false);
+});
+
+test('a beating lock is a live syncer and a cold one is not', () => {
+    heldAt(Date.now());
+    assert.equal(syncerIsLive(), true);
+
+    heldAt(Date.now() - 12000);
+    assert.equal(syncerIsLive(), true, 'one missed beat is not a dead syncer');
+
+    // Past this, a prompt hook spawns a replacement. The heartbeat is every 10s,
+    // so three missed beats is the point where nobody is feeding the log.
+    heldAt(Date.now() - 31000);
+    assert.equal(syncerIsLive(), false);
+});
+
+test('a lock written by a crashed syncer does not keep the log starved forever', () => {
+    heldAt(Date.now() - 600000);
+    assert.equal(syncerIsLive(), false, 'a ten-minute-old lock must not look alive');
+});
+
+const MINUTE = 60000;
+
+test('a refusal doubles the wait and a success ends it', () => {
+    // Nothing wrong: stay on the configured cadence.
+    assert.equal(nextDelay({ previous: MINUTE, base: MINUTE, refused: null }), MINUTE);
+
+    // Turned away: come back half as often, then half again.
+    assert.equal(nextDelay({ previous: MINUTE, base: MINUTE, refused: 'ratelimited' }), 2 * MINUTE);
+    assert.equal(nextDelay({ previous: 2 * MINUTE, base: MINUTE, refused: 'ratelimited' }), 4 * MINUTE);
+
+    // The backoff is for the outage, not a punishment that outlives it.
+    assert.equal(nextDelay({ previous: 8 * MINUTE, base: MINUTE, refused: null }), MINUTE);
+});
+
+test('the wait stops doubling at ten minutes', () => {
+    assert.equal(nextDelay({ previous: 8 * MINUTE, base: MINUTE, refused: 'ratelimited' }), 10 * MINUTE);
+    assert.equal(nextDelay({ previous: 10 * MINUTE, base: MINUTE, refused: 'ratelimited' }), 10 * MINUTE);
+
+    // A workspace that is down for an hour must still be found within ten minutes
+    // of coming back, or the channel looks dead long after Slack is fine.
+    assert.ok(nextDelay({ previous: 10 * MINUTE, base: MINUTE, refused: 'timeout' }) <= 10 * MINUTE);
+});
+
+test('raising sync_seconds mid-backoff is honoured, not undercut', () => {
+    // config.json changed to a five-minute cadence while the wait was still at one.
+    // Doubling from the old, smaller wait would poll faster than the config now asks.
+    assert.equal(nextDelay({ previous: MINUTE, base: 5 * MINUTE, refused: 'ratelimited' }), 10 * MINUTE);
+    assert.equal(nextDelay({ previous: MINUTE, base: 5 * MINUTE, refused: null }), 5 * MINUTE);
+});
+
+test('not being logged in builds no back-off: the first poll after a login is not ten minutes away', () => {
+    assert.match(NOT_LOGGED_IN, /not logged in/);
+    assert.equal(nextDelay({ previous: MINUTE, base: MINUTE, refused: NOT_LOGGED_IN }), MINUTE);
+    assert.equal(nextDelay({ previous: 8 * MINUTE, base: MINUTE, refused: NOT_LOGGED_IN }), MINUTE, 'and one built up before is let go');
+});
+
+test('a poll without a login says so and asks Slack nothing', async () => {
+    const real = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('Slack was asked'); };
+    try {
+        const config = { version: 1, channels: [{ id: 'C1', name: 'general' }] };
+        assert.deepEqual(await pollOnce(config), { added: 0, refused: NOT_LOGGED_IN });
+    } finally {
+        globalThis.fetch = real;
+    }
+});

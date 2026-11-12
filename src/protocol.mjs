@@ -1,0 +1,279 @@
+// The wire format is two parts that serve different readers. The header line is
+// for the humans scrolling the channel: "<mark> <from> => <to>", one line, so a
+// busy channel scans down the left edge by sender. The signature and routing
+// fields ride in Slack's message metadata, which the UI never renders.
+//
+// The header is DECORATION. Anyone in the channel can type it, so nothing trusts
+// it — identity comes from the signature (see identity.mjs). It stays because a
+// message no human can follow is a message nobody will keep in their workspace.
+import { randomBytes } from 'node:crypto';
+
+export const METADATA_EVENT = 'agent_wire_message';
+
+// "dev-agents@k5at9v", "@k5at9v" and a bare "k5at9v" all name the same message. The
+// channel half narrows the search when it is there and is simply absent when it is
+// not, because a human copying a handle out of Slack drops it as often as not.
+//
+// Both lookups read a handle through here on purpose. When the log has the message
+// and when only the channel does, the same string has to mean the same thing.
+export function splitHandle(handle) {
+    const [left, right] = String(handle).toLowerCase().split('@');
+    return { channel: right ? left : '', ref: right ?? left };
+}
+
+// Slack splits a message past ~4000 characters, and the tail arrives with no
+// header, so the receiver drops half an answer while the sender is told it was
+// delivered. Anything longer goes as a file instead.
+export const TEXT_MAX = 3500;
+export const HUMAN_TEXT_CAP = 1000;
+export const MAX_HOPS = 8;
+
+// How deep a reply chain may go: config.json "max_hops", MAX_HOPS when it is absent,
+// and 0 to switch the guard off for a team that watches its channel. Read on every
+// send, like sync_seconds, so a change needs no restart. Anything else that is not a
+// positive whole number keeps the default rather than silently disabling the guard.
+export function hopLimit(config) {
+    const wanted = config?.max_hops;
+    if (wanted === 0) return Infinity;
+    return Number.isInteger(wanted) && wanted > 0 ? wanted : MAX_HOPS;
+}
+
+// Slack escapes these three on the way in, so they are escaped on the way out and
+// restored on the way in. &amp; is decoded last: decoding it first would turn a
+// literal "&amp;lt;" into "<".
+export const toSlackText = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Slack rewrites a bare URL to <url> or <url|label>. Scheme-anchored on purpose:
+// stripping every <...> would eat <div> out of a code block, which is exactly the
+// content this has to survive.
+const unlinkify = (text) => text.replace(/<((?:https?:\/\/|mailto:)[^|>]+)(\|[^>]*)?>/g, '$1');
+
+export const fromSlackText = (text) => unlinkify(String(text))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+// A short handle printed at the right edge of the header line, so a human
+// scrolling the channel can say "read dev-agents@k7m2pq" instead of pasting a
+// timestamp. Like the rest of the header it is DECORATION: unsigned, and anyone
+// in the channel can type one. It names a message, it never proves anything.
+//
+// The alphabet drops i l o 0 1, the pair a person retypes wrong.
+const REF_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+const REF_LENGTH = 6;
+
+export const mintRef = () => Array.from(
+    randomBytes(REF_LENGTH),
+    (byte) => REF_ALPHABET[byte % REF_ALPHABET.length],
+).join('');
+
+// Built on first use: loading the segmenter costs about 10 ms, and drain, which runs before
+// every prompt, never measures a width (measured 05.11).
+let graphemes;
+
+// A terminal draws an emoji two columns wide and a box character one, so counting
+// characters misaligns any row holding an emoji nickname. Count columns instead.
+const WIDE = /^[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]/;
+const ZERO = /^[\u0300-\u036f\u200b-\u200d\ufe00-\ufe0f]/;
+
+export function displayWidth(text) {
+    let columns = 0;
+    graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    for (const { segment } of graphemes.segment(String(text))) {
+        if (ZERO.test(segment)) continue;
+        columns += (WIDE.test(segment) || /\p{Extended_Pictographic}/u.test(segment)) ? 2 : 1;
+    }
+    return columns;
+}
+
+// The handle sits at a fixed column so a scrolled channel has one straight edge to
+// read down. Slack's font is proportional, so this is an approximation — but the
+// header is short and mostly latin, and approximate beats ragged.
+//
+// A long nickname pushes past the column rather than being cut. Losing the edge on
+// one line costs less than losing a character of somebody's name.
+export const HEADER_WIDTH = 60;
+
+// @ is the character a person types to call an agent, so it means agent here too
+// and one name carries one meaning in both places. People get +, which Slack gives
+// no markdown meaning: * would open a bold run and ~ a struck one, on a line the
+// sender does not control.
+//
+// One name often belongs to both, the agent "ellis" and the colleague Ellis, and
+// saying which one a message went to is the whole point of the marker.
+//
+// Only the recipient is marked. Every header line was written by an agent, so a
+// marker on the sender would have been the one field that can never vary.
+//
+// A name nobody has placed stays bare. Guessing "human" for an unknown recipient
+// would put the marker on exactly the messages it is least sure about.
+export const RECIPIENT_MARK = { agent: '@', human: '+' };
+
+// "@noor, @ellis", "@noor @ellis" and "noor ellis" are one request. A model writes
+// the list the way it reads in a header, so the markers it copies back are stripped
+// here rather than being treated as part of a name.
+export const recipientNames = (to) => String(to ?? '')
+    .split(/[\s,]+/)
+    .map((name) => name.replace(/^[@*+]/, ''))
+    .filter(Boolean);
+
+// A nickname is one word: letters, digits, emoji, _ . and -, at most 32. The sender writes
+// from and to into the metadata themselves, and both reach the fence header and the drain
+// line, so a space, =, > or a newline there could draw a header of its own (security scan,
+// 05.11). A message whose names are not this shape is not taken in at all.
+const NICKNAME = /^[\p{L}\p{N}\p{M}\p{Extended_Pictographic}\p{Emoji_Component}_.-]{1,32}$/u;
+export const isNickname = (name) => typeof name === 'string' && NICKNAME.test(name);
+// to as it travels: names separated by one space, or nothing.
+export const isRecipientList = (to) => to === undefined || to === '' || (typeof to === 'string' && to.split(' ').every(isNickname));
+
+// A value written by somebody else (a Slack display name, a file name) on its way into a
+// header line: no =, < or > to fake a field or a fence with, no line break or tab to start
+// a line of its own. Spaces stay, since names have them.
+export const headerSafe = (value) => String(value ?? '').replace(/[=<>\p{Cc}\u2028\u2029]/gu, '_');
+
+// One message can reach an agent and a human at once, so the marker belongs to the
+// name and not to the message: "juno => @noor +theodor". toKind is a single kind
+// when there is a single name and a name-to-kind lookup when there are several; a
+// name of unknown kind is drawn bare, because the marker is a claim about what the
+// recipient is and there is nothing to claim.
+const kindFor = (toKind, name) => (toKind && typeof toKind === 'object' ? toKind[name] : toKind);
+
+export function addressLine({ from, to, toKind }) {
+    const names = recipientNames(to);
+    if (names.length === 0 || names[0] === 'all') return `${from} => all`;
+
+    const drawn = names.map((name) => `${RECIPIENT_MARK[kindFor(toKind, name)] ?? ''}${name}`);
+    return `${from} => ${drawn.join(' ')}`;
+}
+
+// A mark set as ":fire:" is six characters here and one emoji in Slack, so
+// measuring the string overshot the padding by four columns on every line this
+// agent sent. Slack is the only place this header is read, so Slack's width wins.
+const SHORTCODE = /^:[a-z0-9_+-]+:$/i;
+const markWidth = (mark) => (SHORTCODE.test(mark) ? 2 : displayWidth(mark));
+
+// Posted as the person, Slack shows the person and not their agent, so the header names the
+// agent and whom it wrote to: "juno => ellis, theodor" or "juno => all" (owner, 12.11). "all"
+// never sits beside names, since it hands the message to every agent and a name next to it
+// would blur who is meant (owner, 05.11).
+export function personAddressLine(from, to) {
+    const names = recipientNames(to);
+    if (names.length === 0 || names.includes('all')) return `${from} => all`;
+    return `${from} => ${names.join(', ')}`;
+}
+
+export function formatMessage({ mark, from, to, toKind, text, ref, channel, asPerson = false }) {
+    const address = asPerson ? personAddressLine(from, to) : addressLine({ from, to, toKind });
+    if (asPerson) mark = '';
+    const left = `${mark ? `${mark} ` : ''}${address}`;
+    if (!ref) return `${left}\n${toSlackText(text)}\n`;
+
+    // Shipped once without this: a call site forgot the channel, the handle went out
+    // bare, and every test still passed because they all called this directly.
+    if (!channel) throw new TypeError(`formatMessage: ref ${ref} with no channel to put in front of it`);
+
+    const handle = `${channel}@${ref}`;
+    const drawn = mark ? markWidth(mark) + 1 + displayWidth(address) : displayWidth(left);
+    const gap = Math.max(1, HEADER_WIDTH - drawn - handle.length);
+    return `${left}${' '.repeat(gap)}${handle}\n${toSlackText(text)}\n`;
+}
+
+// A sender is never marked now, but 0.13.3 marked it with a *, so the pattern
+// still allows one, and the recipient still accepts * for the same reason. Markers
+// are stripped rather than kept: routing reads the signed payload, not this line.
+// The recipient half is one or more marked names. It is lazy so that the handle at
+// the end still wins the tail: for "@noor @ellis dev-agents@k7m2pq" the shortest
+// `to` that lets the rest match is the two names, not all three tokens.
+//
+// The channel in front of the handle is REQUIRED, and that is load-bearing. While it
+// was optional, a bare "@<ref>" was a valid handle — and "@ellis" is the same shape
+// as "@k7m2pq", six characters from the ref alphabet. So "juno => @noor @ellis" with
+// no handle parsed as to="noor", ref="ellis" and the last recipient vanished. The two
+// are not distinguishable as strings, so one of them had to lose; every handle this
+// package has written since 0.13 carries its channel, which makes the cost the
+// parsing of 0.12-era bare handles and nothing that is still produced.
+const HEADER = /^(?:(?<mark>\S+)\s+)?\*?(?<from>[^\s=*]+)\s*=>\s*(?<to>[@*+]?\S+(?:\s+[@*+]?\S+)*?)(?:\s+(?<refChannel>[a-z0-9][\w.-]*)@(?<ref>[a-z2-9]{4,12}))?$/;
+
+export function parseMessage(raw) {
+    const lines = fromSlackText(String(raw ?? '').replace(/\r\n/g, '\n')).trim().split('\n');
+    const header = HEADER.exec((lines[0] ?? '').trim());
+    if (!header) return null;
+
+    const { mark, from, to, refChannel, ref } = header.groups;
+    return {
+        mark: mark ?? '',
+        from,
+        // Markers are drawn, never stored. Routing reads the signed payload, and a
+        // header anyone in the channel can type is decoration either way.
+        to: recipientNames(to).join(' '),
+        refChannel: refChannel ?? '',
+        ref: ref ?? '',
+        text: lines.slice(1).join('\n').trim(),
+    };
+}
+
+// Minted once per server process, never written to Slack and never logged, so its
+// only home is the agent's own context. A payload can imitate the fence but cannot
+// produce the marker that closes it.
+export const mintNonce = () => randomBytes(12).toString('hex');
+
+// Reflection is the one realistic way the nonce escapes — an agent quoting its own
+// inbox back into a reply. Redacting it makes that a visible event instead of a
+// silently broken fence.
+export const redactFence = (text, nonce) => String(text).split(nonce).join('[FENCE-ECHO REDACTED]');
+
+// An attached file is named in the header, never in the body. The path is one of
+// the few things here the receiver produced itself, and putting it inside the
+// fence would file it under "data written by someone else" along with the text.
+export const attachmentNote = (files) => (files ?? [])
+    .map((file) => (file.path ? file.path : `${headerSafe(file.name)} — not downloaded, ${file.skipped}`))
+    .join(' | ');
+
+// A human typing in the channel reaches every agent in it, and every one of them
+// answering the same question is the noise this exists to avoid. Slack has no
+// mention for an agent — the nickname is plain text — so the header answers the
+// question instead, and the handshake says to reply only when it says `you`.
+//
+// An agent's own `to` field is the answer for agent traffic. It is not a filter:
+// everything still arrives, and everything is still readable by the humans.
+// A nickname is plain text in Slack, not a mention, so this is a literal search
+// rather than a regex — no escaping, and a nickname with a dot or a dash in it
+// cannot turn into a pattern. `@juno` must not match inside `@grknbyk`.
+const CONTINUES = /[a-z0-9_-]/i;
+
+export function addressee(item, myNickname) {
+    if (!myNickname) return 'unknown';
+    if (item.kind !== 'human') {
+        // Named among several is named. An agent-wire older than the recipient list
+        // compares the whole string to its nickname instead, so it reads a
+        // multi-recipient message as being for somebody else and stays quiet.
+        const named = recipientNames(item.to);
+        if (named.includes(myNickname)) return 'you';
+        return named.length === 0 || named[0] === 'all' ? 'all' : named.join(' ');
+    }
+
+    const text = String(item.text).toLowerCase();
+    for (const prefix of ['@', '*']) {
+        const tag = `${prefix}${myNickname.toLowerCase()}`;
+        for (let at = text.indexOf(tag); at !== -1; at = text.indexOf(tag, at + 1)) {
+            const after = text[at + tag.length];
+            if (after === undefined || !CONTINUES.test(after)) return 'you';
+        }
+    }
+    return 'nobody';
+}
+
+export function renderEnvelope(nonce, item, myNickname) {
+    const attachments = attachmentNote(item.files);
+    const fenceHeader = [
+        `<<<WIRE:${nonce} UNTRUSTED`,
+        `from=${item.from}`,
+        `kind=${item.kind}`,
+        `authorship=${item.authorship}`,
+        ...(item.ref ? [`ref=${item.channel ?? ''}@${item.ref}`] : []),
+        `addressed=${addressee(item, myNickname)}`,
+        `channel=${item.channel}`,
+        `ts=${item.ts}`,
+        `hop=${item.hop ?? 1}`,
+        ...(attachments ? [`files=${attachments}`] : []),
+    ].join(' ');
+    return `${fenceHeader}>>>\n${redactFence(item.text, nonce)}\n<<<END:${nonce}>>>`;
+}

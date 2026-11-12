@@ -1,0 +1,393 @@
+#!/usr/bin/env node
+// Only the two cheap modules are imported up front. `status` builds an
+// Intl.Segmenter and touches the Extended_Pictographic table, which together cost
+// more than everything else this file does; `setup` pulls in readline. A prompt
+// hook runs `drain` on every single prompt, so it must not pay for the panel it
+// never draws.
+import { activeChannels, channelMode, loadConfig, patchConfig, projectScope, scopeId, setChannelMode } from '../src/config.mjs';
+import { markRead, selectMessages, sessionStart } from '../src/inbox.mjs';
+import { drainReport, earlierLine, loginLapsedNotice, questionLines } from '../src/drain.mjs';
+import { answeredIn } from '../src/questions.mjs';
+import { mintNonce } from '../src/protocol.mjs';
+
+const USAGE = `agent-wire — message other AI coding agents through Slack
+
+  agent-wire             in a terminal: a screen of your channels and people, to set Read and Write on each
+  agent-wire status      show your account and what agents may read and write (the default outside a terminal)
+  agent-wire setup       connect a workspace, a channel and this agent's identity
+  agent-wire serve       run the MCP stdio server (what your agent client launches)
+  agent-wire doctor      re-check the token, the channels and this agent's identity
+  agent-wire drain       report what arrived since the last drain, then stop
+  agent-wire channel     where agents may post: allow|ask|deny|remove <channel...>; none lists
+  agent-wire dm          who agents may direct-message from your account: allow|ask|deny|remove <name...>; none lists
+  agent-wire login       post and read as yourself: connect your Slack account in the browser (--remove: log out)
+  agent-wire sync        keep the local log fed from Slack; starts itself when needed
+  agent-wire channels    list the channels and what each one is set to here
+  agent-wire ask <name>  name who is waiting and how many; open nothing
+  agent-wire read <name> put the messages themselves into every prompt
+  agent-wire off <name>  say nothing about it in this session (default)
+  agent-wire version     print the installed version, which is what a bug report needs
+  agent-wire update      install the newest published version, cache and all
+  agent-wire help        print this
+
+A session starts silent. Open a channel in it with ask or read; nothing is said
+about a channel nobody opened.
+
+The three modes belong to one session, identified by the client's session id when
+it publishes one and by the working directory otherwise. The token, the nickname
+and the keys are shared. Run a mode command in a plain terminal to set the folder's
+default, or set AGENT_WIRE_SCOPE to name a session yourself.
+
+A human writing in the channel reaches every agent in it, so yours answers only
+when the message names it: @<nickname>, the one agent-wire status shows.
+
+Every message carries a handle at the right edge of its header line, like
+dev-agents@k7m2pq. Say it to your agent to point at that one message.
+
+Docs: https://github.com/grknbyk/agent-wire`;
+
+// A prompt hook has one line of the user's screen to work with, so a backlog past
+// this is reported as a count rather than listed.
+const DRAIN_COUNT = 50;
+
+// For a client hook that runs on every prompt. An `ask` channel costs the agent
+// one line and reads nothing; a `read` channel spends the prompt on the messages
+// themselves and marks them read, because nothing else is going to.
+async function drain() {
+    const config = loadConfig();
+    if (!config) return 0;
+
+    const { ensureSyncer } = await import('../src/sync.mjs');
+    const { refreshLatest, updateNotice } = await import('../src/version.mjs');
+
+    // Messages are read from disk, always. Making sure a syncer is alive is the
+    // whole of what this hook does about Slack; the round trip it used to make was
+    // 343 ms of its 485 ms, spent re-fetching what the log already had.
+    ensureSyncer();
+    await refreshLatest();
+
+    // Printed before the messages, and on every prompt until somebody acts on it.
+    // An agent-wire too old to understand the wire format is worse than a line of
+    // noise in the prompt.
+    const stale = updateNotice();
+    if (stale) console.log(stale);
+    const lapsed = loginLapsedNotice(config);
+    if (lapsed) console.log(lapsed);
+    for (const line of questionLines(answeredIn())) console.log(line);
+
+    const heard = activeChannels(config);
+    const names = heard.map((channel) => channel.name);
+    // What was in the log before this session's first prompt is counted there, once, and not read.
+    const { from, earlier } = sessionStart(names);
+    if (earlier > 0) console.log(earlierLine(earlier));
+    const waiting = selectMessages({
+        state: 'unread',
+        count: DRAIN_COUNT,
+        channels: names,
+        from,
+    });
+    if (waiting.length === 0) return 0;
+
+
+    const { lines, readItems } = drainReport(config, heard, waiting, mintNonce());
+    if (lines.length === 0) return 0;
+
+    console.log(lines.join('\n'));
+    markRead(readItems);
+    return 0;
+}
+
+function listChannels() {
+    const config = loadConfig();
+    const configured = config?.channels ?? [];
+    if (configured.length === 0) {
+        console.log('no channels configured — run `agent-wire setup`');
+        return 1;
+    }
+
+    for (const channel of configured) console.log(`${channelMode(config, channel).padEnd(4)}  #${channel.name}`);
+    console.log(`\nsession ${scopeId()}`);
+    if (scopeId() !== projectScope()) console.log(`falls back to ${projectScope()}`);
+    return 0;
+}
+
+const MODE_EXPLAINED = {
+    off: (name) => `#${name} is off for this session. Nothing about it reaches this agent;`
+        + ` its history stays readable with inbox channel="${name}".`,
+    ask: (name) => `#${name} is on ask. Every prompt names who is waiting and how many, and opens nothing.`,
+    read: (name) => `#${name} is on read. Every prompt carries the messages themselves, marked read as they arrive.`
+        + ' Other people\'s writing now reaches this agent without you asking for it.',
+};
+
+// Which mode a channel is in is a decision for the person running the agent, so
+// it lives on the command line and not in the MCP tool list. A message arriving
+// from the channel must not be able to talk the agent into silencing another one,
+// nor into opening one.
+function switchChannel(name, mode) {
+    // One channel is the ordinary case, and typing its name adds nothing to the
+    // command. Past one there is a real choice, so the names are listed instead.
+    const configured = loadConfig()?.channels ?? [];
+    const wanted = name ?? (configured.length === 1 ? configured[0].name : null);
+    if (!wanted) {
+        console.log(configured.length === 0
+            ? 'no channels configured — run `agent-wire setup`'
+            : `usage: agent-wire ${mode} <channel> — one of ${configured.map((channel) => channel.name).join(', ')}`);
+        return 1;
+    }
+
+    const changed = setChannelMode(wanted, mode);
+    if (!changed) {
+        console.log(`no configured channel named "${name}"`);
+        return 1;
+    }
+
+    console.log(MODE_EXPLAINED[mode](changed.channel.name));
+    if (changed.previous === 'off' && mode !== 'off') {
+        console.log('The next poll replays everything that arrived while it was off.');
+    }
+    return 0;
+}
+
+const showStatus = async () => (await import('../src/status.mjs')).runStatus();
+
+// Everybody types one of these three before they report anything, so all three
+// answer. package.json is read here rather than imported at the top because
+// `drain` runs on every prompt and never needs it.
+const PACKAGE_NAME = '@grknbyk/agent-wire';
+
+
+const packageJson = async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
+};
+
+// `npm i -g` came back with the previous version three times in one afternoon,
+// on two machines: npm answers from its own cache and the tag it already has.
+// Clearing first and naming @latest is the difference, and it is not something
+// anybody should have to remember twice.
+async function update() {
+    const { installArgs, runNpm } = await import('../src/version.mjs');
+    const here = (await packageJson()).version;
+
+    const viewed = await runNpm(['view', PACKAGE_NAME, 'version']);
+    if (!viewed.ok) {
+        console.log('could not reach the npm registry, or npm is not installed beside this node.');
+        console.log(`npm said: ${viewed.reason}`);
+        return 1;
+    }
+    const latest = viewed.out;
+
+    // It becomes an npm argument next, and it came off the network. A version is a
+    // version; anything else is not something to pass on.
+    if (!/^[\w.+-]+$/.test(latest)) {
+        console.log(`npm answered with something that is not a version: ${JSON.stringify(latest)}`);
+        return 1;
+    }
+
+    if (latest === here) {
+        console.log(`${here} is the latest.`);
+        return 0;
+    }
+
+    console.log(`${here} installed, ${latest} published. Updating.`);
+    await runNpm(['cache', 'clean', '--force']);
+    const installed = await runNpm(installArgs(latest));
+    if (!installed.ok) {
+        console.log(`\nnpm refused. On macOS that is usually /usr/local owned by root — give npm a`);
+        console.log('prefix you own rather than using sudo, which leaves root-owned files behind:');
+        console.log('  npm config set prefix ~/.npm-global');
+        console.log('  export PATH="$HOME/.npm-global/bin:$PATH"');
+        return 1;
+    }
+
+    console.log(`\nNow on ${latest}. Run \`agent-wire doctor\` to check nothing came loose.`);
+    return 0;
+}
+
+async function showVersion() {
+    console.log((await packageJson()).version);
+    return 0;
+}
+
+// Who agents may direct-message from this account. Names are looked up in Slack and kept as
+// handles, so "ellis" and the handle Slack knows are one entry. Nobody is on a list until the
+// person puts them there, and nobody on no list is reached.
+async function dmCommand() {
+    const config = loadConfig();
+    if (!config) return notConfigured();
+    const { LISTS, WIDENING, dmLists, personSaysYes, place, removeFrom, showLists, widenRefusal } = await import('../src/policy.mjs');
+    const [action, ...names] = process.argv.slice(3);
+    let lists = dmLists(config);
+    if (!action) {
+        console.log(`${showLists(lists)}\n\nanyone on no list is refused. agent-wire dm allow|ask|deny|remove <name...>`);
+        return 0;
+    }
+    if (![...LISTS, 'remove'].includes(action) || names.length === 0) {
+        console.log('usage: agent-wire dm allow|ask|deny|remove <name...>');
+        return 1;
+    }
+    if (action === 'remove') {
+        patchConfig({ dm: removeFrom(lists, names), dm_to: undefined });
+        console.log(`removed: ${names.join(', ')}`);
+        return 0;
+    }
+    if (WIDENING.has(action)) {
+        const said = await personSaysYes(`Put ${names.join(', ')} on the dm ${action} list, so agents can ${action === 'allow' ? 'message them' : 'message them once you agree'} from your Slack account?`);
+        if (!said.yes) {
+            console.log(widenRefusal(said.reason));
+            return 1;
+        }
+    }
+    const { freshUserToken } = await import('../src/login.mjs');
+    const { listPeople, matchPerson, slackClient } = await import('../src/slack.mjs');
+    const token = await freshUserToken(config);
+    if (!token) {
+        console.log('not logged in to Slack: run agent-wire login');
+        return 1;
+    }
+    const result = await listPeople(slackClient(token));
+    if (!result.ok) {
+        console.log(`Slack said: ${result.reason}`);
+        return 1;
+    }
+    const handles = [];
+    for (const name of names) {
+        const found = matchPerson(result.people, name);
+        if (found.length !== 1) {
+            console.log(found.length ? `"${name}" fits ${found.map((p) => p.handle).join(', ')}: name one` : `nobody named "${name}"`);
+            return 1;
+        }
+        handles.push(found[0].handle);
+    }
+    lists = place(lists, action, handles);
+    patchConfig({ dm: lists, dm_to: undefined });
+    console.log(`${action}: ${handles.join(', ')}\n\n${showLists(lists)}`);
+    return 0;
+}
+
+// Where agents may post from this account, by channel name: the same three lists as dm.
+async function channelCommand() {
+    const config = loadConfig();
+    if (!config) return notConfigured();
+    const { LISTS, WIDENING, channelLists, personSaysYes, place, removeFrom, showLists, widenRefusal } = await import('../src/policy.mjs');
+    const [action, ...names] = process.argv.slice(3);
+    const lists = channelLists(config);
+    if (!action) {
+        console.log(`${showLists(lists)}
+
+any channel on no list is refused. agent-wire channel allow|ask|deny|remove <channel...>`);
+        return 0;
+    }
+    if (![...LISTS, 'remove'].includes(action) || names.length === 0) {
+        console.log('usage: agent-wire channel allow|ask|deny|remove <channel...>');
+        return 1;
+    }
+    const wanted = names.map((name) => name.replace(/^#/, '').toLowerCase());
+    const known = new Set((config.channels ?? []).map((channel) => channel.name.toLowerCase()));
+    const unknown = wanted.filter((name) => !known.has(name));
+    if (action !== 'remove' && unknown.length) {
+        console.log(`not an agent-wire channel: ${unknown.join(', ')}. Channels: ${[...known].join(', ')}`);
+        return 1;
+    }
+    if (WIDENING.has(action)) {
+        const said = await personSaysYes(`Put #${wanted.join(', #')} on the channel ${action} list, so agents can post there from your Slack account${action === 'ask' ? ' once you agree' : ''}?`);
+        if (!said.yes) {
+            console.log(widenRefusal(said.reason));
+            return 1;
+        }
+    }
+    const next = action === 'remove' ? removeFrom(lists, wanted) : place(lists, action, wanted);
+    patchConfig({ channel_lists: next });
+    console.log(`${action}: ${wanted.join(', ')}
+
+${showLists(next)}`);
+    return 0;
+}
+
+const commands = {
+    channel: channelCommand,
+    dm: dmCommand,
+    status: async () => await showStatus() ?? notConfigured(),
+    setup: async () => (await import('../src/setup.mjs')).runSetup(),
+    doctor: async () => (await import('../src/setup.mjs')).runDoctor(),
+    login: async () => (await import('../src/login.mjs')).runLogin(process.argv[3]),
+    drain,
+    channels: listChannels,
+    off: () => switchChannel(process.argv[3], 'off'),
+    ask: () => switchChannel(process.argv[3], 'ask'),
+    read: () => switchChannel(process.argv[3], 'read'),
+    // `on` was the only way to undo `off` before there were three modes, and it
+    // meant "announce it without opening it". That is ask.
+    on: () => switchChannel(process.argv[3], 'ask'),
+    update,
+    version: showVersion,
+    '--version': showVersion,
+    '-v': showVersion,
+    // Asking for the usage text is not a mistake, so it prints and exits 0. The
+    // same text after a wrong command is a complaint and exits 1.
+    help: showUsage,
+    '--help': showUsage,
+    '-h': showUsage,
+};
+
+function showUsage() {
+    console.log(USAGE);
+    return 0;
+}
+
+function notConfigured() {
+    console.log('not configured yet — run `agent-wire setup`');
+    return 1;
+}
+
+// The exit code is set, never forced. Calling process.exit() while an undici
+// socket from a Slack call is still closing aborts libuv on Windows, and doctor
+// hit that on every run. Nothing here holds the event loop open, so letting Node
+// finish by itself costs about a millisecond.
+//
+// A function rather than a chain at module scope, because every branch here ends
+// the work and `return` is what says so. At module scope there is no return, and
+// the same five cases have to be written as `else if`.
+async function run(name) {
+    // serve() is the one command that must not exit at all: the open stdin stream
+    // is what keeps the MCP server alive. It is called, not awaited.
+    if (name === 'serve') {
+        (await import('../src/mcp.mjs')).serve();
+        return;
+    }
+
+    if (name === 'sync') {
+        // Declining is an ordinary outcome — usually "one is already running" — so it
+        // says why and exits 0. Only a missing install is a failure worth a code.
+        const declined = await (await import('../src/sync.mjs')).syncLoop();
+        if (!declined) return;
+        console.log(declined);
+        process.exitCode = declined.startsWith('not set up') ? 1 : 0;
+        return;
+    }
+
+    if (commands[name]) {
+        process.exitCode = await commands[name]() ?? 0;
+        return;
+    }
+
+    if (name) {
+        console.log(USAGE);
+        process.exitCode = 1;
+        return;
+    }
+
+    // Bare invocation in a terminal opens the Read and Write screen. Anywhere else, and when the
+    // screen has nothing to show, it says where you stand once there is something to stand on,
+    // and the usage text while there is not.
+    const shown = await (await import('../src/tui.mjs')).runScreen();
+    if (shown !== null) {
+        process.exitCode = shown;
+        return;
+    }
+    if (await showStatus() === null) console.log(USAGE);
+}
+
+await run(process.argv[2]);

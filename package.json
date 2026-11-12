@@ -1,0 +1,48 @@
+{
+  "name": "@grknbyk/agent-wire",
+  "version": "0.22.3",
+  "description": "An MCP server that lets your AI agent read and write Slack channels and direct messages from your own account, within the allow, ask and deny rules you set.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Gürkan Bıyık <gurkan.biyik@outlook.com>",
+  "homepage": "https://github.com/grknbyk/agent-wire",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grknbyk/agent-wire.git"
+  },
+  "bugs": {
+    "url": "https://github.com/grknbyk/agent-wire/issues"
+  },
+  "bin": {
+    "agent-wire": "bin/agent-wire.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "bench": "node bench/bench.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "assets",
+    "manifest.json",
+    "integrations"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "slack",
+    "ai-agents",
+    "agent-communication",
+    "claude-code",
+    "cursor",
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./integrations/pi/agent-wire.ts"
+    ]
+  }
+}
